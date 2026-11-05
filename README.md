@@ -72,6 +72,9 @@ An entry file can call `createAgentMailExtension({ bin, wake, refreshSeconds, co
 pi -e ~/src/sys/pi-agent-mail/src/index.ts
 ```
 
+- Do not also run agent-mail's pi-loop line (README section 6 of agent-mail) in that session: both would wake it for the same mail.
+- Until agent-mail 2.3.0 is installed, the light runs in legacy mode. `PI_AGENT_MAIL_BIN` can name a 2.3 program for `pending` and the doorbell, which only read the mailbox and refresh the session's member record.
+
 ## Tests
 
 ```sh

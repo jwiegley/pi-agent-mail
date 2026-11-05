@@ -46,9 +46,10 @@ def ok(condition, what):
     CHECKS += 1
 
 
-def doorbells():
-    """The pids of every running `agent-mail watch --doorbell --forever --parent ...`."""
-    result = subprocess.run(["pgrep", "-f", DOORBELL], capture_output=True, text=True, check=False)
+def doorbells_for(pid):
+    """The pids of the doorbells whose parent is PID: `agent-mail watch --doorbell --forever --parent PID`.
+    Pi's launcher execs Pi itself, so the pid this harness started is the parent the extension names."""
+    result = subprocess.run(["pgrep", "-f", f"{DOORBELL} {pid}$"], capture_output=True, text=True, check=False)
     return set(result.stdout.split())
 
 
@@ -271,9 +272,11 @@ def full_run(program, adapter):
     with TemporaryDirectory() as root:
         mailbox = Mailbox(Path(root), program)
         bootstrap = adapter_bootstrap(mailbox, program, adapter) if adapter else None
-        before = doorbells()
         pi = Pi(mailbox, program, bootstrap)
+        pid = pi.process.pid
         pi.wait(status(f"✉ {NAME} · +notes · +ops"), "the first status light")
+        time.sleep(1)
+        ok(len(doorbells_for(pid)) == 1, f"Pi {pid} runs {len(doorbells_for(pid))} doorbells, not one")
 
         mailbox.send("+notes", "a quiet note", "nothing urgent")
         time.sleep(2.5)  # agent-mail counts a post only once its 2 s settle window has passed
@@ -308,36 +311,36 @@ def full_run(program, adapter):
 
         ok(pi.close() == 0, "Pi did not exit cleanly")
         time.sleep(1.5)
-        ok(not (doorbells() - before), "a doorbell outlived Pi")
+        ok(not doorbells_for(pid), "a doorbell outlived Pi")
 
 
 def replacement_run(program):
     """A session replacement (new_session) stops the old runtime's doorbell and starts one new one."""
     with TemporaryDirectory() as root:
         mailbox = Mailbox(Path(root), program)
-        before = doorbells()
         pi = Pi(mailbox, program)
+        pid = pi.process.pid
         light = status(f"✉ {NAME} · +notes · +ops")
         pi.wait(light, "the light before the replacement")
         time.sleep(1)
-        ok(len(doorbells() - before) == 1, f"one doorbell before the replacement, not {len(doorbells() - before)}")
+        ok(len(doorbells_for(pid)) == 1, f"one doorbell before the replacement, not {len(doorbells_for(pid))}")
         pi.request("new-1", "new_session")
         pi.wait(light, "the light after the replacement")
         time.sleep(1.5)
-        ok(len(doorbells() - before) == 1, f"one doorbell after the replacement, not {len(doorbells() - before)}")
+        ok(len(doorbells_for(pid)) == 1, f"one doorbell after the replacement, not {len(doorbells_for(pid))}")
         mailbox.send(NAME, "after", "direct mail after the replacement")
         pi.wait(custom_wake, "the wake in the new session")
         pi.wait(settled, "the new session's wake turn to settle")
         ok(pi.close() == 0, "Pi did not exit cleanly")
         time.sleep(1.5)
-        ok(not (doorbells() - before), "a doorbell outlived Pi after a replacement")
+        ok(not doorbells_for(pid), "a doorbell outlived Pi after a replacement")
 
 
 def legacy_run(program):
     with TemporaryDirectory() as root:
         mailbox = Mailbox(Path(root), program)
-        before = doorbells()
         pi = Pi(mailbox, program)
+        pid = pi.process.pid
         pi.wait(status("✉"), "the legacy light before any ring")
         mailbox.send(NAME, "hello", "direct mail for the legacy run")
         pi.wait(status(f"✉ {NAME} · 1 direct"), "the legacy light after the ring")
@@ -347,7 +350,7 @@ def legacy_run(program):
         pi.wait(notice("agent-mail before 2.3"), "/mail in legacy mode")
         ok(pi.close() == 0, "Pi did not exit cleanly")
         time.sleep(1.5)
-        ok(not (doorbells() - before), "a legacy doorbell outlived Pi")
+        ok(not doorbells_for(pid), "a legacy doorbell outlived Pi")
 
 
 def main():

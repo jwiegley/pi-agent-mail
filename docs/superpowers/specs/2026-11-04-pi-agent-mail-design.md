@@ -89,14 +89,16 @@ agent-mail pending [NAME] [--format human|loop|context|json] [--channel CHANNEL[
 | `channels` | Every effective subscription, sorted by name: `unread` posts (settled, not the session's own, as `human` counts them), its `wake`, `write` and `pinned` marks, and `missing` when the channel is missing or is not a channel. The sum of `unread` equals `human`'s channel count. |
 | `write_targets` | The subscriptions marked write, sorted; empty when there are none. |
 | `default_channel` | Where posts go when `write_targets` is empty. |
-| `ring` | `null` when nothing rings; otherwise what the doorbell would ring now: the same 12-hex digest as `ring_line` and the same direct and wake-channel counts. |
+| `ring` | `null` when no mail is ring-eligible; otherwise the same 12-hex digest as `ring_line` and the same direct and wake-channel counts, taken from the same scan as the counts. Like `--format context`, it ignores the pause file, which `paused` reports. |
 | `last_delivery` | `null` before the first delivery; otherwise the last batch's UTC stamp, its item count, and whether it may not have reached the session (`possibly_unseen`). |
 
 ### Failure (non-zero exit)
 
 `{"v": 1, "agent_mail": "2.3.0", "name": null, "error": "no_identity", "problem": "no source names this session"}`
 
-- `name` is the name when one was given or resolved, else `null`.
+- `name` is the name once it was resolved or a given NAME passed its check, else `null`. An explicit empty NAME is `invalid_name`, as in 2.2.2.
+- Anything unforeseen (an error that is not a `MailError`) is the refusal `internal_error`, whose `problem` names only the exception's type, since its text can hold a file name; agent-mail's log gets the details.
+- Two failures stay outside JSON: a usage error (status 2, the usage on stderr) and a failed output (status 3).
 - `error` is the `MailError` code (`no_identity` for a session with no name, `invalid_name`, `mailbox_missing`, `unsafe_mailbox`, and so on); `problem` is its message.
 - The exit status is `EXIT_STATUS.get(code, 1)`, as for every other refusal.
 
@@ -114,13 +116,13 @@ New self-test checks cover: the fields and their types; per-channel counts again
 
 - At `session_start`, the extension activates only when `ctx.mode` is `tui` or `rpc`. In `print` and `json` modes, where Pi subagents also run, it does nothing but the guard.
 - One instance per Pi process: an instance activates only while no other instance in the same process is active, so an in-process subagent or SDK session never starts a second doorbell for the same parent pid (which would silently take over the first one's slot).
-- `PI_AGENT_MAIL=off` in the environment turns it off entirely.
+- `PI_AGENT_MAIL=off` in the environment turns everything off but the bash guard.
 - Every agent-mail run gets the environment the managed MCP server gets, so both bind the same name and mailbox: nix-config's platform baseline (`HOME`, `LANG`, `LC_ALL`, `LOGNAME`, `NIX_SSL_CERT_FILE`, `NODE_EXTRA_CA_CERTS`, `SHELL`, `SSL_CERT_FILE`, `TERM`, `TMPDIR`, `USER`, `XDG_CONFIG_HOME`), the session identity names (`AGENTDECK_IDENTITY_FILE`, `AGENTDECK_INSTANCE_ID`, `AGENTDECK_TITLE`, `AGENT_MAIL_CONFIG`, `AGENT_MAIL_NAME`, `CLAUDE_CONFIG_DIR`, `CLAUDE_JOB_DIR`), and `PATH`. A stray `AGENT_MAIL_DIR` in Pi's environment therefore reaches neither.
 - First it probes with `agent-mail pending --format json` (no NAME):
   - **Success:** full mode, with the bound name. Later probes pass that name, so the extension keeps the name it started with, as the MCP server keeps its own.
   - **JSON failure `no_identity`:** inactive and silent. Most Pi sessions outside agent-deck have no name.
   - **Any other JSON failure** (no mailbox, an unsafe mailbox): an error light; probes keep running on the timer, and the doorbell starts once one succeeds.
-  - **Exit 2 without JSON** (agent-mail 2.2.x rejects the format or the missing NAME): legacy mode.
+  - **Exit 2 without JSON** (agent-mail 2.2.x rejects the format or the missing NAME): legacy mode, if the environment holds any of agent-mail's name sources (`AGENT_MAIL_NAME`, `AGENTDECK_TITLE`, `AGENTDECK_IDENTITY_FILE`, `AGENTDECK_INSTANCE_ID`); without one, inactive and silent, since the doorbell could not bind a name.
   - **agent-mail not found:** inactive; `/mail` says why.
 
 ### The doorbell
@@ -137,7 +139,7 @@ New self-test checks cover: the fields and their types; per-channel counts again
 - A ring line otherwise: the wake is deferred. At an `agent_settled` that was not an abort, at the end of a cooldown, and at each refresh tick, a deferred wake is checked while Pi is idle: the extension asks `agent-mail pending <name> --format context`; a ring line there means mail still waits, and the agent is woken once; an empty answer means the agent received it meanwhile, and the deferred wake is dropped. After Escape (`agent_settled` with `aborted`), nothing is checked until the next tick, so John gets his turn first.
 - The agent's own `receive` never cancels a deferred wake by itself: whether mail still waits is always asked of agent-mail, so a failed or partial receive still leads to a wake.
 - Each ring line yields at most one wake. Nothing re-wakes for the same mail unless the doorbell itself rings again (its one 30-minute reminder).
-- Cooldown: at least 20 seconds between automatic wakes. A ring inside the cooldown waits for its end, then follows the deferred path.
+- Cooldown: at least 20 seconds between automatic wakes, measured on a monotonic clock. A ring inside the cooldown waits for its end, then follows the deferred path; Escape stops a cooldown already counting down, so the wake waits for the next tick.
 - A Pi `/new`, `/resume`, `/fork` or `/reload` replaces the extension's runtime in the same process, and agent-mail's doorbell slot (keyed by the parent pid) does not ring again for mail it already rang. So a deferred wake, the pause state, and the time of the last wake are handed from the old runtime to the new one through a per-process record, and the new runtime checks the owed wake at its first tick.
 - The notice is fixed text with only the validated name, the two counts, and the tool hint:
 
@@ -165,7 +167,7 @@ New self-test checks cover: the fields and their types; per-channel counts again
   - Every subscribed channel appears: with its count when posts wait, dim without one, and `+ch ?` when missing.
   - At most six channel segments, waiting ones first, then `+N more`.
   - The envelope is dim when nothing waits, accent when only quiet posts or broadcasts wait, and warning when ring-eligible mail waits (direct mail or posts in a wake channel).
-  - Suffixes: `wake off`, `doorbell stopped`, `agent-mail paused`, `stale` when the last probe failed after an earlier success.
+  - Suffixes: `wake off`, `doorbell stopped`, `agent-mail paused`, `stale` when the last probe failed after an earlier success. They always show: when the line is full, the channels are cut first.
 - Legacy mode: `✉ pi · 1 direct · 2 channel` while something rings, `✉ pi` after the doorbell's first line, and a dim `✉` before it.
 - Error: `✉ agent-mail: <short reason>` in the error colour.
 - Inactive: no status at all.
@@ -191,7 +193,7 @@ New self-test checks cover: the fields and their types; per-channel counts again
 
 ### Configuration
 
-- `PI_AGENT_MAIL=off`: the extension does nothing.
+- `PI_AGENT_MAIL=off`: the extension does nothing but the bash guard; `/mail` says it is off.
 - `PI_AGENT_MAIL_BIN`: the agent-mail executable (default: `agent-mail` on `PATH`).
 - `PI_AGENT_MAIL_WAKE=0`: start with automatic wakes off.
 - `PI_AGENT_MAIL_REFRESH`: seconds between timer refreshes, 10 to 600 (default 30).
@@ -241,6 +243,13 @@ New self-test checks cover: the fields and their types; per-channel counts again
 ## The builder check
 
 A fresh builder read this design and asked seven questions. Five were settled here: owed wakes across a session replacement (a per-process hand-over), a second instance in one process (one active instance per process), the server's environment (the same allowlist), the adapter's call shapes (verified in its source; active tools only), and what else holds a wake (dialogs, drafts, Escape). The branch `work/pending-json` is new and starts empty. One question is John's, and he was not available, so the design proceeds on call 10 and says so: the light shows counts, not senders or subjects. Senders are a cheap addition if he wants them, since agent-mail takes them from file names that pass its name grammar; subjects would need agent-mail to read message headers, which `pending` has never done.
+
+## The reviews
+
+Fresh reviewers read both parts after a sentinel probe showed they inherit nothing of the building session. Every finding was fixed with a test, and the end-to-end run was repeated.
+
+- **agent-mail** (0 high, 2 medium, 4 low): a non-`MailError` escaped `--format json` as a traceback (now `internal_error`); `member_at` let `RecursionError` from a crafted member record escape (now caught, the defect the overview design had scheduled for the next release); the ring came from a second scan (now the same one); `pending ""` fell back to the environment (now `invalid_name`); the README did not say that `ring` ignores the pause file, nor name the two failures outside JSON.
+- **The extension** (0 high, 3 medium, 9 low): on agent-mail 2.2 a session without a name showed a stuck "doorbell stopped" (now inactive); the legacy name was not handed over (now carried); the guard missed multi-line pipes, continuations, command substitution, subshells and wrappers such as `timeout` (now caught) and blocked heredoc text (now skipped); the light's flags could be cut off (now kept); the dialog hold could stick (now lifts on input and settle); Escape left a running cooldown (now stopped); a spawn failure while retrying switched the extension off (now retried); a `pending` run could outlive Pi (now aborted at shutdown); the cooldown used the wall clock (now monotonic); the spec and the code disagreed on `PI_AGENT_MAIL=off` (now both say "all but the guard"); the end-to-end leak check could match other sessions' doorbells (now it matches Pi's pid).
 
 ## Left to the builder
 

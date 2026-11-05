@@ -69,7 +69,7 @@ describe.skipIf(!PROGRAM)("agent-mail pending --format json, for real", () => {
     const unnamed = await runAgentMail(PROGRAM as string, ["pending", "--format", "json"], { env: env({ AGENT_MAIL_NAME: "pi" }) });
     const viaEnv = parseStatus(unnamed.stdout);
     expect(viaEnv.kind === "ok" && viaEnv.status.name).toBe("pi");
-  });
+  }, 30_000); // agent-mail's settle window and about ten runs of the real program
 
   test("a session with no name gets one JSON failure line and nothing on stderr", () => {
     const result = spawnSync(PROGRAM as string, ["pending", "--format", "json"], { env: env(), encoding: "utf8" });
