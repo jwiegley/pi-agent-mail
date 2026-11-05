@@ -88,7 +88,8 @@ describe("runAgentMail", () => {
     expect(result.aborted).toBe(true);
     expect(Date.now() - started).toBeLessThan(3_000);
     await new Promise((resolve) => setTimeout(resolve, 300));
-    expect(spawnSync("pgrep", ["-f", "fake-agent-mail.sh"]).status).not.toBe(0);
+    // pgrep exits 1 when nothing matches; 0 (a match) or an error (no pgrep) fails the test.
+    expect(spawnSync("pgrep", ["-f", "--", "fake-agent-mail\\.sh"], { encoding: "utf8" }).status).toBe(1);
   });
 
   test("an abort before the start runs nothing", async () => {

@@ -98,7 +98,8 @@ function nothingMatches(pattern: string): boolean {
 }
 
 function noDoorbellLeft(): boolean {
-  return nothingMatches(`--parent ${process.pid}`);
+  // Anchored: the doorbell's command line ends with the parent pid, and a longer pid must not match.
+  return nothingMatches(`--parent ${process.pid}$`);
 }
 
 describe("registration", () => {
