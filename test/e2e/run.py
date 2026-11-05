@@ -311,6 +311,28 @@ def full_run(program, adapter):
         ok(not (doorbells() - before), "a doorbell outlived Pi")
 
 
+def replacement_run(program):
+    """A session replacement (new_session) stops the old runtime's doorbell and starts one new one."""
+    with TemporaryDirectory() as root:
+        mailbox = Mailbox(Path(root), program)
+        before = doorbells()
+        pi = Pi(mailbox, program)
+        light = status(f"✉ {NAME} · +notes · +ops")
+        pi.wait(light, "the light before the replacement")
+        time.sleep(1)
+        ok(len(doorbells() - before) == 1, f"one doorbell before the replacement, not {len(doorbells() - before)}")
+        pi.request("new-1", "new_session")
+        pi.wait(light, "the light after the replacement")
+        time.sleep(1.5)
+        ok(len(doorbells() - before) == 1, f"one doorbell after the replacement, not {len(doorbells() - before)}")
+        mailbox.send(NAME, "after", "direct mail after the replacement")
+        pi.wait(custom_wake, "the wake in the new session")
+        pi.wait(settled, "the new session's wake turn to settle")
+        ok(pi.close() == 0, "Pi did not exit cleanly")
+        time.sleep(1.5)
+        ok(not (doorbells() - before), "a doorbell outlived Pi after a replacement")
+
+
 def legacy_run(program):
     with TemporaryDirectory() as root:
         mailbox = Mailbox(Path(root), program)
@@ -334,10 +356,11 @@ def main():
         sys.exit("e2e: set PI_AGENT_MAIL_TEST_BIN to an agent-mail 2.3 program")
     adapter = os.environ.get("PI_MCP_ADAPTER")
     full_run(program, adapter)
+    replacement_run(program)
     legacy = os.environ.get("PI_AGENT_MAIL_LEGACY_BIN")
     if legacy:
         legacy_run(legacy)
-    runs = "full" + (" with the adapter" if adapter else " without the adapter") + (" and legacy" if legacy else "")
+    runs = "full" + (" with the adapter" if adapter else " without the adapter") + ", replacement" + (", legacy" if legacy else "")
     print(f"e2e: {CHECKS} checks passed ({runs})")
 
 
