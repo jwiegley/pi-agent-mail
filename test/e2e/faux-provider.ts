@@ -22,11 +22,23 @@ function textOf(message: any): string {
     .join("\n");
 }
 
+// Pi 1.5 carries tool declarations in system messages (toolsAdded and
+// toolsRemoved), not in a tools field of the context.
+function toolNames(messages: any[]): Set<string> {
+  const names = new Set<string>();
+  for (const message of messages) {
+    if (message?.role !== "system") continue;
+    for (const tool of message.toolsAdded ?? []) if (tool?.name) names.add(tool.name);
+    for (const tool of message.toolsRemoved ?? []) names.delete(typeof tool === "string" ? tool : tool?.name);
+  }
+  return names;
+}
+
 function respond(context: any) {
   turn++;
-  const messages = context?.messages ?? [];
-  const last = messages[messages.length - 1];
-  const tools = new Set((context?.tools ?? []).map((tool: any) => tool?.name));
+  const messages: any[] = context?.messages ?? [];
+  const last = [...messages].reverse().find((message) => message?.role !== "system");
+  const tools = toolNames(messages);
   if (last?.role === "toolResult") {
     return fauxAssistantMessage(`done: ${last.toolName} ${last.isError ? "failed" : "succeeded"}`);
   }
