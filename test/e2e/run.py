@@ -14,6 +14,11 @@ Environment:
   PI_BIN                    Pi (default: pi on PATH)
   PI_AGENT_MAIL_EXTENSION   the extension entry to load (default: src/index.ts),
                             for example the entry nix-config generates
+  PI_AGENT_MAIL_USE_ENTRY_BIN=1
+                            leave PI_AGENT_MAIL_BIN unset in the full and
+                            replacement runs, so the entry's own agent-mail
+                            runs; PI_AGENT_MAIL_TEST_BIN should name that same
+                            program
 
 Every run gets a private HOME, TMPDIR, Pi agent directory and mailbox, made
 with agent-mail init; it never touches ~/Mailbox.
@@ -34,6 +39,7 @@ ROOT = Path(__file__).resolve().parents[2]
 EXTENSION = Path(os.environ.get("PI_AGENT_MAIL_EXTENSION") or ROOT / "src" / "index.ts")
 FAUX = ROOT / "test" / "e2e" / "faux-provider.ts"
 PI = os.environ.get("PI_BIN", "pi")
+USE_ENTRY_BIN = os.environ.get("PI_AGENT_MAIL_USE_ENTRY_BIN") == "1"
 NAME = "testpi"
 DEADLINE = 60
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
@@ -124,7 +130,7 @@ def adapter_bootstrap(mailbox, program, adapter):
 class Pi:
     """Real Pi in RPC mode; every event it prints is kept in order."""
 
-    def __init__(self, mailbox, program, bootstrap=None):
+    def __init__(self, mailbox, program, bootstrap=None, set_bin=True):
         self.mailbox = mailbox
         command = [
             PI,
@@ -154,9 +160,10 @@ class Pi:
             "PI_OFFLINE": "1",
             "AGENT_MAIL_CONFIG": str(mailbox.config),
             "AGENT_MAIL_NAME": NAME,
-            "PI_AGENT_MAIL_BIN": program,
             "PI_AGENT_MAIL_REFRESH": "10",
         }
+        if set_bin:
+            env["PI_AGENT_MAIL_BIN"] = program
         self.stderr = (base / "pi.stderr").open("w+")
         self.process = subprocess.Popen(
             command, cwd=base / "project", env=env, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=self.stderr
@@ -284,7 +291,7 @@ def full_run(program, adapter):
     with TemporaryDirectory() as root:
         mailbox = Mailbox(Path(root), program)
         bootstrap = adapter_bootstrap(mailbox, program, adapter) if adapter else None
-        pi = Pi(mailbox, program, bootstrap)
+        pi = Pi(mailbox, program, bootstrap, set_bin=not USE_ENTRY_BIN)
         pid = pi.process.pid
         pi.wait(status(f"✉ {NAME} · +notes · +ops"), "the first status light")
         time.sleep(1)
@@ -330,7 +337,7 @@ def replacement_run(program):
     """A session replacement (new_session) stops the old runtime's doorbell and starts one new one."""
     with TemporaryDirectory() as root:
         mailbox = Mailbox(Path(root), program)
-        pi = Pi(mailbox, program)
+        pi = Pi(mailbox, program, set_bin=not USE_ENTRY_BIN)
         pid = pi.process.pid
         light = status(f"✉ {NAME} · +notes · +ops")
         pi.wait(light, "the light before the replacement")
