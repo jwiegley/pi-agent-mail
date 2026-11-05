@@ -37,13 +37,23 @@ DEADLINE = 60
 ANSI = re.compile(r"\x1b\[[0-9;]*m")
 DOORBELL = "watch --doorbell --forever --parent"
 CHECKS = 0
+EVENTS = 0
 
 
 def ok(condition, what):
+    """One explicit assertion of the run."""
     global CHECKS
     if not condition:
         raise AssertionError(what)
     CHECKS += 1
+
+
+def clean(event, when=""):
+    """Every event Pi prints is also checked: no extension may have failed. Counted apart from ok()."""
+    global EVENTS
+    if event.get("type") == "extension_error":
+        raise AssertionError(f"an extension failed{when}: {event}")
+    EVENTS += 1
 
 
 def doorbells_for(pid):
@@ -195,7 +205,7 @@ class Pi:
             if not raw.strip():
                 continue
             event = json.loads(raw)
-            ok(event.get("type") != "extension_error", f"an extension failed: {event}")
+            clean(event)
             self.events.append(event)
             if predicate(event):
                 if advance:
@@ -230,7 +240,7 @@ class Pi:
                 break
             if raw.strip():
                 event = json.loads(raw)
-                ok(event.get("type") != "extension_error", f"an extension failed at shutdown: {event}")
+                clean(event, " at shutdown")
                 self.events.append(event)
         code = self.process.wait(timeout=DEADLINE)
         self.stderr.close()
@@ -364,7 +374,7 @@ def main():
     if legacy:
         legacy_run(legacy)
     runs = "full" + (" with the adapter" if adapter else " without the adapter") + ", replacement" + (", legacy" if legacy else "")
-    print(f"e2e: {CHECKS} checks passed ({runs})")
+    print(f"e2e: {CHECKS} assertions passed; {EVENTS} events, none an extension error ({runs})")
 
 
 if __name__ == "__main__":

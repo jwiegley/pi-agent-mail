@@ -12,7 +12,7 @@ A status light in Pi's footer:
 ✉ pi · 1 direct · +fleet 2 · +nix-config · 1 broadcast
 ```
 
-- The session's mailbox name, then waiting direct mail, every subscribed channel, and unread broadcasts.
+- The session's mailbox name, then waiting direct mail, the subscribed channels, and unread broadcasts. Channel names are chosen by whoever creates a channel; agent-mail's name grammar limits them to lower-case letters, digits, dots and single hyphens.
 - A channel shows its count when posts wait, and is dim when none do; `+name ?` marks a subscribed channel that is missing.
 - At most six channels, waiting ones first, then `+N more`.
 - The envelope is dim when nothing waits, accent when only quiet posts or broadcasts wait, and warning when mail that rings waits: direct mail, or posts in a channel subscribed with wake.
@@ -47,7 +47,7 @@ A session without a mailbox name shows nothing.
 ## How it works with the MCP tools
 
 - It watches the agent's agent-mail calls, through the `mcp` proxy, the `mcp__agent_mail` namespace tool, or any prefixed direct tool, and refreshes the light after `receive`, `reread`, `subscribe`, `unsubscribe` and `send`.
-- It blocks a bash command that pipes `agent-mail read` or `agent-mail watch` into `head`, `tail`, `sed` or `grep`, agent-mail's rule, because what they print is consumed and whatever the pipe cuts off is lost. This guard runs in every mode.
+- It blocks a bash command that pipes `agent-mail read` or `agent-mail watch` into `head`, `tail`, `sed` or `grep`, agent-mail's rule, because what they print is consumed and whatever the pipe cuts off is lost. This guard runs in every mode. It is a text check of the usual spellings, a shell's `-c` argument and a heredoc fed to a shell included; quoting tricks, aliases and scripts can still hide the pipe.
 - Every agent-mail run gets the environment that nix-config's managed MCP transport gives the server, plus `PATH`: the platform baseline and the session identity names. So the light and the wakes describe the same name and mailbox that `receive` reads.
 
 ## Requirements
@@ -82,7 +82,7 @@ make test     # bun test: the unit suites
 make e2e      # real Pi in RPC mode, a faux provider, a private mailbox
 ```
 
-`make e2e` needs `PI_AGENT_MAIL_TEST_BIN`, an agent-mail 2.3 program. `PI_MCP_ADAPTER`, the path of pi-mcp-adapter's `index.ts`, adds a real `receive` through the adapter. `PI_AGENT_MAIL_LEGACY_BIN`, an agent-mail 2.2 program, adds a legacy-mode run. Every run uses a private HOME, TMPDIR, Pi agent directory and mailbox, and never touches `~/Mailbox`.
+`make test` skips the three suites that run a real agent-mail unless `PI_AGENT_MAIL_TEST_BIN` names an agent-mail 2.3 program. `make e2e` needs it too. `PI_MCP_ADAPTER`, the path of pi-mcp-adapter's `index.ts`, adds a real `receive` through the adapter. `PI_AGENT_MAIL_LEGACY_BIN`, an agent-mail 2.2 program, adds a legacy-mode run. Every run uses a private HOME, TMPDIR, Pi agent directory and mailbox, and never touches `~/Mailbox`.
 
 ## Layout
 
