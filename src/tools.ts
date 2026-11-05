@@ -45,23 +45,71 @@ export function receiveHint(toolNames: readonly string[]): string | null {
 }
 
 const CUTTERS: ReadonlySet<string> = new Set(["head", "tail", "sed", "grep"]);
-const WRAPPERS: ReadonlySet<string> = new Set(["env", "command", "exec", "nohup", "time"]);
+// Commands that run the command after them; their options are skipped, with
+// the value of an option that takes one, and timeout's duration.
+const WRAPPERS: ReadonlySet<string> = new Set(["env", "command", "exec", "nohup", "time", "timeout", "stdbuf", "nice", "sudo", "doas"]);
+const OPTIONS_WITH_VALUES: ReadonlySet<string> = new Set(["-n", "-u", "-g", "-s", "-k", "-C", "-p", "-U"]);
+const DURATION = /^\d+(?:\.\d+)?[smhd]?$/;
 const PYTHON = /^python(?:3(?:\.\d+)?)?$/;
 const ASSIGNMENT = /^[A-Za-z_][A-Za-z0-9_]*=/;
+const HEREDOC = /<<(-?)\s*(['"]?)([A-Za-z_][A-Za-z0-9_]*)\2/;
 
+/** COMMAND without its heredoc bodies, which are data, not commands. */
+function withoutHeredocs(command: string): string {
+  const kept: string[] = [];
+  let end: string | null = null;
+  let tabs = false;
+  for (const line of command.split("\n")) {
+    if (end !== null) {
+      if ((tabs ? line.replace(/^\t+/, "") : line) === end) end = null;
+      continue;
+    }
+    kept.push(line);
+    const opened = HEREDOC.exec(line);
+    if (opened) {
+      tabs = opened[1] === "-";
+      end = opened[3];
+    }
+  }
+  return kept.join("\n");
+}
+
+/** One logical command line: backslash-newlines and newlines after a pipe join their lines. */
+function logical(command: string): string {
+  return withoutHeredocs(command)
+    .replace(/\\\n/g, " ")
+    .replace(/(\|&?)[ \t]*\n/g, "$1 ");
+}
+
+/** A pipeline stage's words; command substitution, subshell and group openers are dropped. */
 function words(stage: string): string[] {
-  return stage.trim().replace(/^&\s*/, "").split(/\s+/).filter(Boolean);
+  return stage
+    .replace(/\$\(|`|(^|\s)[({]+/g, " ")
+    .trim()
+    .replace(/^&\s*/, "")
+    .split(/\s+/)
+    .filter(Boolean);
 }
 
 function base(word: string): string {
   return word.replace(/^['"]+|['"]+$/g, "").split("/").pop() ?? "";
 }
 
-/** True when STAGE runs `agent-mail read` or `agent-mail watch`, directly or through python. */
+/** True when STAGE runs `agent-mail read` or `agent-mail watch`, directly, through python, or through a wrapper. */
 function runsReadOrWatch(stage: string): boolean {
   const w = words(stage);
   let i = 0;
-  while (i < w.length && (WRAPPERS.has(base(w[i])) || ASSIGNMENT.test(w[i]))) i++;
+  while (i < w.length) {
+    if (ASSIGNMENT.test(w[i])) {
+      i++;
+      continue;
+    }
+    const wrapper = base(w[i]);
+    if (!WRAPPERS.has(wrapper)) break;
+    i++;
+    while (i < w.length && w[i].startsWith("-")) i += OPTIONS_WITH_VALUES.has(w[i]) ? 2 : 1;
+    if (wrapper === "timeout" && i < w.length && DURATION.test(w[i])) i++;
+  }
   if (i < w.length && PYTHON.test(base(w[i]))) {
     i++;
     while (i < w.length && /^-[A-Za-z]+$/.test(w[i])) i++;
@@ -74,7 +122,7 @@ function runsReadOrWatch(stage: string): boolean {
 
 /** The reason to block a bash command that pipes agent-mail read or watch into a cutter, else null. */
 export function guardBash(command: string): string | null {
-  for (const part of command.split(/\n|;|&&|\|\|/)) {
+  for (const part of logical(command).split(/\n|;|&&|\|\|/)) {
     const stages = part.split("|");
     for (let s = 0; s < stages.length - 1; s++) {
       if (!runsReadOrWatch(stages[s])) continue;

@@ -58,6 +58,17 @@ describe("guardBash", () => {
     "agent-mail watch --doorbell | head -1",
     "true; agent-mail read pi | grep -v x",
     "agent-mail read pi 2>&1 | tail -n 3",
+    "agent-mail read pi |\n  head -20",
+    "agent-mail read pi |&\n  head -20",
+    "agent-mail read pi \\\n  | head",
+    "out=$(agent-mail read pi | head -20)",
+    "(agent-mail read pi) | head",
+    "timeout 60 agent-mail watch pi | head -5",
+    "timeout -k 5 60 agent-mail read pi | head",
+    "sudo -u johnw agent-mail read pi | tail",
+    "nice -n 5 agent-mail read pi | grep x",
+    "stdbuf -oL agent-mail watch pi | grep x",
+    "env -i HOME=/h agent-mail read pi | head",
   ];
   for (const command of blocked) {
     test(`blocks: ${command}`, () => {
@@ -78,6 +89,11 @@ describe("guardBash", () => {
     "agent-mail-other read pi | head",
     "head -1 file | agent-mail read pi",
     "",
+    "cat >> NOTES.md <<'EOF'\nagent-mail read pi | head -5\nEOF",
+    "cat <<-EOF\n\tagent-mail read pi | head\n\tEOF\necho done",
+    'cat <<"DOC" > notes.md\nNever run agent-mail watch pi | grep x.\nDOC',
+    "timeout 60 agent-mail pending pi | head",
+    "sudo -u johnw agent-mail channels | grep fleet",
   ];
   for (const command of passed) {
     test(`passes: ${JSON.stringify(command)}`, () => {
