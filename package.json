@@ -1,0 +1,15 @@
+{
+  "name": "pi-agent-mail",
+  "version": "0.1.0",
+  "description": "Pi extension that wakes a session for agent-mail, coordinates with its MCP tools, and shows a per-channel status light",
+  "type": "module",
+  "license": "BSD-3-Clause",
+  "private": true,
+  "pi": {
+    "extensions": ["./src/index.ts"]
+  },
+  "scripts": {
+    "test": "bun test test",
+    "e2e": "python3 test/e2e/run.py"
+  }
+}
