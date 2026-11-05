@@ -100,6 +100,27 @@ describe("startDoorbell", () => {
     expect(run.lines).toEqual([RING, RING, RING]);
   });
 
+  test("a callback that throws does not stop later lines", async () => {
+    const lines: string[] = [];
+    const exited = new Promise<[number | null, string | null]>((resolve) => {
+      startDoorbell(
+        FAKE,
+        4242,
+        (line) => {
+          lines.push(line);
+          throw new Error("callback failed");
+        },
+        (code, signal) => {
+          resolve([code, signal]);
+          throw new Error("exit callback failed");
+        },
+        { env: env("ring") },
+      );
+    });
+    expect(await exited).toEqual([0, null]);
+    expect(lines).toEqual([RING, RING, RING]);
+  });
+
   test("stop ends a running doorbell", async () => {
     const run = collect("sleep");
     expect(run.handle().pid).toBeGreaterThan(0);

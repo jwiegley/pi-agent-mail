@@ -124,7 +124,11 @@ export class Controller {
       slot.carry = null;
     }
     this.allowed = true;
-    await this.probe();
+    try {
+      await this.probe();
+    } catch (error) {
+      if (!this.stopped) this.becomeError("internal error", cleanText(String(error), 160));
+    }
   }
 
   /** End everything this controller started; every later callback is a no-op. */
@@ -158,8 +162,24 @@ export class Controller {
     }
   }
 
+  // ---- failures ----
+
+  /** Record an unexpected failure: the light goes stale and /mail says what happened. */
+  private fail(error: unknown): void {
+    if (this.stopped) return;
+    this.stale = true;
+    this.lastFailure = `internal error: ${cleanText(String(error), 160)}`;
+    this.render();
+  }
+
+  /** Run P in the background; whatever it throws stays here, never an unhandled rejection in Pi. */
+  private background(p: Promise<unknown>): void {
+    p.catch((error) => this.fail(error));
+  }
+
   // ---- probing ----
 
+  /** Refresh the light; never rejects. */
   private refresh(): Promise<void> {
     if (this.stopped) return Promise.resolve();
     if (this.inflight) {
@@ -170,7 +190,11 @@ export class Controller {
       try {
         do {
           this.rerun = false;
-          await this.refreshOnce();
+          try {
+            await this.refreshOnce();
+          } catch (error) {
+            this.fail(error);
+          }
         } while (this.rerun && !this.stopped);
       } finally {
         this.inflight = null;
@@ -286,7 +310,7 @@ export class Controller {
   }
 
   private ensureInterval(): void {
-    if (this.interval === null) this.interval = this.deps.setInterval(() => void this.tick(), this.config.refreshMs);
+    if (this.interval === null) this.interval = this.deps.setInterval(() => this.background(this.tick()), this.config.refreshMs);
   }
 
   /** The refresh timer: the light, then any deferred wake while Pi is idle. */
@@ -342,7 +366,7 @@ export class Controller {
     } else if (ring.name !== this.name) {
       return;
     }
-    void this.refresh();
+    this.background(this.refresh());
     this.considerWake(ring);
   }
 
@@ -367,20 +391,28 @@ export class Controller {
     if (this.cooldownTimer !== null) return;
     this.cooldownTimer = this.deps.setTimeout(() => {
       this.cooldownTimer = null;
-      if (!this.stopped && this.deferred && this.deps.isIdle()) void this.recheck();
+      if (!this.stopped && this.deferred && this.deps.isIdle()) this.background(this.recheck());
     }, ms);
   }
 
-  private wake(ring: Ring): void {
+  /** Send the notice. A failure leaves the wake deferred, to be tried again at the next check. */
+  private wake(ring: Ring): boolean {
+    try {
+      const hint = receiveHint(this.deps.toolNames());
+      this.deps.sendWake(wakeText(ring.name, ring.direct, ring.channel, hint), {
+        name: ring.name,
+        direct: ring.direct,
+        channel: ring.channel,
+        digest: ring.digest,
+      });
+    } catch (error) {
+      this.deferred = true;
+      this.fail(error);
+      return false;
+    }
     this.deferred = false;
     this.lastWakeAt = this.deps.now();
-    const hint = receiveHint(this.deps.toolNames());
-    this.deps.sendWake(wakeText(ring.name, ring.direct, ring.channel, hint), {
-      name: ring.name,
-      direct: ring.direct,
-      channel: ring.channel,
-      digest: ring.digest,
-    });
+    return true;
   }
 
   /** A deferred wake, once Pi is idle: wake only if mail still rings. */
@@ -412,8 +444,14 @@ export class Controller {
    */
   async onSettled(aborted = false): Promise<void> {
     if (this.stopped || (this.mode !== "full" && this.mode !== "legacy")) return;
-    void this.refresh();
-    if (this.deferred && !aborted) await this.recheck();
+    this.background(this.refresh());
+    if (this.deferred && !aborted) {
+      try {
+        await this.recheck();
+      } catch (error) {
+        this.fail(error);
+      }
+    }
   }
 
   // ---- the agent's own agent-mail calls ----
@@ -436,7 +474,7 @@ export class Controller {
     const op = this.calls.get(id) ?? classifyCall(toolName, undefined);
     this.calls.delete(id);
     if (op === null || (this.mode !== "full" && this.mode !== "legacy")) return;
-    if (REFRESHING.has(op)) void this.refresh();
+    if (REFRESHING.has(op)) this.background(this.refresh());
   }
 
   // ---- /mail ----
@@ -453,7 +491,17 @@ export class Controller {
     return lines.join("\n");
   }
 
+  /** One /mail command; never rejects. */
   async command(args: string): Promise<string> {
+    try {
+      return await this.commandOnce(args);
+    } catch (error) {
+      this.fail(error);
+      return `agent-mail: /mail failed: ${cleanText(String(error), 160)}`;
+    }
+  }
+
+  private async commandOnce(args: string): Promise<string> {
     if (this.stopped) return "agent-mail: stopped";
     switch (args.trim().toLowerCase()) {
       case "":
@@ -497,7 +545,7 @@ export class Controller {
       this.deferred = true;
       return "agent-mail: mail waits; Pi is busy, so the agent is woken when it settles";
     }
-    this.wake(ring);
+    if (!this.wake(ring)) return `agent-mail: mail waits, but the wake failed\n${this.details()}`;
     return `agent-mail: woke the agent (${ring.direct} direct, ${ring.channel} channel waiting)`;
   }
 

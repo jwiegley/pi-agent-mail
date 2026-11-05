@@ -157,10 +157,23 @@ export function startDoorbell(
 ): DoorbellHandle {
   const maxLine = opts.maxLine ?? MAX_LINE;
   let exited = false;
+  // A callback that throws must not escape into the stream's event emitter,
+  // where it would become an uncaught exception in Pi.
+  const deliver = (line: string) => {
+    try {
+      onLine(line);
+    } catch {
+      // The controller owns its own failures; a line is never worth Pi's process.
+    }
+  };
   const finish = (code: number | null, signal: string | null) => {
     if (exited) return;
     exited = true;
-    onExit(code, signal);
+    try {
+      onExit(code, signal);
+    } catch {
+      // As above.
+    }
   };
   const child = launch(bin, ["watch", "--doorbell", "--forever", "--parent", String(parentPid)], opts.env);
   if (typeof child === "string") {
@@ -177,7 +190,7 @@ export function startDoorbell(
       const line = buffer.slice(0, end);
       buffer = buffer.slice(end + 1);
       if (dropping) dropping = false;
-      else if (line.length <= maxLine) onLine(line);
+      else if (line.length <= maxLine) deliver(line);
       end = buffer.indexOf("\n");
     }
     if (buffer.length > maxLine) {

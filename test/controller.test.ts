@@ -559,6 +559,37 @@ describe("refreshing and the doorbell", () => {
   });
 });
 
+describe("failures inside the controller", () => {
+  test("a run that throws marks the light stale and rejects nothing", async () => {
+    let broken = false;
+    const h = harness((args) => {
+      if (broken) throw new Error("boom");
+      return fullScript()(args);
+    });
+    await h.controller.start("tui");
+    broken = true;
+    await h.advance(30_000);
+    expect(h.lastStatus()).toBe("✉ pi · +fleet · stale");
+    expect(await h.controller.command("")).toContain("the last refresh failed: internal error: Error: boom");
+    h.bells[0].onLine(RING());
+    await settle();
+    await h.controller.onSettled();
+    broken = false;
+    await h.advance(30_000);
+    expect(h.lastStatus()).toBe("✉ pi · +fleet");
+  });
+
+  test("a wake that throws is contained", async () => {
+    const h = harness(fullScript());
+    await h.controller.start("tui");
+    (h.controller as any).deps.sendWake = () => {
+      throw new Error("stale context");
+    };
+    expect(() => h.bells[0].onLine(RING())).not.toThrow();
+    await settle();
+  });
+});
+
 describe("/mail", () => {
   test("shows details and usage", async () => {
     const h = harness(fullScript());

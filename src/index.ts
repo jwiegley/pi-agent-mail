@@ -111,8 +111,22 @@ export function createAgentMailExtension(options: AgentMailOptions = {}): (pi: E
         clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
         setInterval: (fn, ms) => unref(setInterval(fn, ms)),
         clearInterval: (handle) => clearInterval(handle as ReturnType<typeof setInterval>),
-        isIdle: () => ctx.isIdle() && promptsOpen === 0 && !hasDraft(ctx),
-        toolNames: () => pi.getActiveTools(),
+        // These run from timers and child-process callbacks, so none of them may throw:
+        // a context that is being torn down answers "busy", "no tools" and "plain".
+        isIdle: () => {
+          try {
+            return ctx.isIdle() && promptsOpen === 0 && !hasDraft(ctx);
+          } catch {
+            return false;
+          }
+        },
+        toolNames: () => {
+          try {
+            return pi.getActiveTools();
+          } catch {
+            return [];
+          }
+        },
         sendWake: (text, details) =>
           pi.sendMessage(
             { customType: MESSAGE_TYPE, content: text, display: true, details },
@@ -125,7 +139,13 @@ export function createAgentMailExtension(options: AgentMailOptions = {}): (pi: E
             // A runtime being torn down may refuse UI calls; the light is best effort.
           }
         },
-        theme: () => (ctx.ui?.theme as Theme | undefined) ?? PLAIN,
+        theme: () => {
+          try {
+            return (ctx.ui?.theme as Theme | undefined) ?? PLAIN;
+          } catch {
+            return PLAIN;
+          }
+        },
       };
       controller = new Controller(deps, config);
       void controller.start(ctx.mode);
