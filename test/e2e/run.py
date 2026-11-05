@@ -276,6 +276,7 @@ def full_run(program, adapter):
         pi.wait(status(f"✉ {NAME} · +notes · +ops"), "the first status light")
 
         mailbox.send("+notes", "a quiet note", "nothing urgent")
+        time.sleep(2.5)  # agent-mail counts a post only once its 2 s settle window has passed
         pi.prompt("mail-1", "/mail")
         pi.wait(notice("+notes: 1 waiting (quiet)"), "/mail showing the quiet post")
         pi.wait(status(f"✉ {NAME} · +notes 1 · +ops"), "the light counting the quiet post")
