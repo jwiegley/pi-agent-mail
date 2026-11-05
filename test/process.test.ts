@@ -1,8 +1,8 @@
 import { describe, expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 
 import { runAgentMail, sessionEnvironment, startDoorbell } from "../src/process.ts";
+import { nothingMatches } from "./processes.ts";
 
 describe("sessionEnvironment", () => {
   test("keeps the managed server's names and PATH, and nothing else", () => {
@@ -83,13 +83,14 @@ describe("runAgentMail", () => {
     const started = Date.now();
     const pending = runAgentMail(FAKE, [], { env: env("sleep"), signal: abort.signal });
     await new Promise((resolve) => setTimeout(resolve, 200));
+    // The positive control: the probe sees the stand-in while it runs.
+    expect(nothingMatches("fake-agent-mail\\.sh")).toBe(false);
     abort.abort();
     const result = await pending;
     expect(result.aborted).toBe(true);
     expect(Date.now() - started).toBeLessThan(3_000);
     await new Promise((resolve) => setTimeout(resolve, 300));
-    // pgrep exits 1 when nothing matches; 0 (a match) or an error (no pgrep) fails the test.
-    expect(spawnSync("pgrep", ["-f", "--", "fake-agent-mail\\.sh"], { encoding: "utf8" }).status).toBe(1);
+    expect(nothingMatches("fake-agent-mail\\.sh")).toBe(true);
   });
 
   test("an abort before the start runs nothing", async () => {

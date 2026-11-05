@@ -1,9 +1,9 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 
 import { createAgentMailExtension, optionsFromEnv } from "../src/index.ts";
 import { GUARD_REASON } from "../src/tools.ts";
+import { nothingMatches } from "./processes.ts";
 
 const FAKE = join(import.meta.dir, "fixtures", "fake-agent-mail.sh");
 const STATUS = {
@@ -88,14 +88,6 @@ afterEach(() => {
   }
   (globalThis as any)[Symbol.for("pi-agent-mail/process-slot")] = undefined;
 });
-
-/** pgrep's verdict on PATTERN: true when nothing matches; a pgrep error fails the test. */
-function nothingMatches(pattern: string): boolean {
-  const result = spawnSync("pgrep", ["-f", "--", pattern], { encoding: "utf8" });
-  if (result.status === 1) return true;
-  if (result.status === 0) return false;
-  throw new Error(`pgrep failed (${result.status}): ${result.stderr}`);
-}
 
 function noDoorbellLeft(): boolean {
   // Anchored: the doorbell's command line ends with the parent pid, and a longer pid must not match.
