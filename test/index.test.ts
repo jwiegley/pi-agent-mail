@@ -3,9 +3,9 @@ import { join } from "node:path";
 
 import { createAgentMailExtension, optionsFromEnv } from "../src/index.ts";
 import { GUARD_REASON } from "../src/tools.ts";
-import { nothingMatches } from "./processes.ts";
+import { literal, nothingMatches, privateCopy } from "./processes.ts";
 
-const FAKE = join(import.meta.dir, "fixtures", "fake-agent-mail.sh");
+const FAKE = privateCopy(join(import.meta.dir, "fixtures", "fake-agent-mail.sh"));
 const STATUS = {
   v: 1,
   agent_mail: "2.3.0",
@@ -253,7 +253,7 @@ describe("a session end to end against a fake agent-mail", () => {
     const c = fakeCtx("rpc");
     f.emit("session_start", { reason: "startup" }, c.ctx);
     // Anchored to the fixture's own command, so a shell whose command line mentions it never matches.
-    const probe = "fixtures/fake-agent-mail\\.sh pending --format json$";
+    const probe = `${literal(FAKE)} pending --format json$`;
     await until(() => !nothingMatches(probe));
     f.emit("session_shutdown", { reason: "quit" }, c.ctx);
     await until(() => nothingMatches(probe), 3_000);
