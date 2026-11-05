@@ -12,6 +12,8 @@ Environment:
   PI_MCP_ADAPTER            pi-mcp-adapter's index.ts; without it the receive
                             step is replaced by the faux model saying so
   PI_BIN                    Pi (default: pi on PATH)
+  PI_AGENT_MAIL_EXTENSION   the extension entry to load (default: src/index.ts),
+                            for example the entry nix-config generates
 
 Every run gets a private HOME, TMPDIR, Pi agent directory and mailbox, made
 with agent-mail init; it never touches ~/Mailbox.
@@ -29,7 +31,7 @@ from threading import Thread
 import time
 
 ROOT = Path(__file__).resolve().parents[2]
-EXTENSION = ROOT / "src" / "index.ts"
+EXTENSION = Path(os.environ.get("PI_AGENT_MAIL_EXTENSION") or ROOT / "src" / "index.ts")
 FAUX = ROOT / "test" / "e2e" / "faux-provider.ts"
 PI = os.environ.get("PI_BIN", "pi")
 NAME = "testpi"
