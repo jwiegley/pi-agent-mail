@@ -74,6 +74,16 @@ describe("renderStatus, full mode", () => {
     );
   });
 
+  test("the flags survive a full line: the channels are cut first", () => {
+    const channels = ["a", "b", "c", "d", "e", "f", "g", "h"].map((c) => chan(c.repeat(20), 3));
+    const view = full({ direct: 4, broadcast: 2, channels, paused: true }, { wakeOff: true, doorbellStopped: true, stale: true });
+    const text = renderStatus(view, plain) ?? "";
+    expect([...text].length).toBeLessThanOrEqual(MAX_STATUS_WIDTH);
+    expect(text.endsWith(" · wake off · doorbell stopped · agent-mail paused · stale")).toBe(true);
+    expect(text.startsWith("✉ pi · 4 direct · +aaaaaaaaaaaaaaaaaaaa 3")).toBe(true);
+    expect(text).toContain("…");
+  });
+
   test("caps width and strips controls", () => {
     const long = "n".repeat(64);
     const channels = ["a", "b", "c", "d", "e", "f"].map((c) => chan(c.repeat(64), 5));

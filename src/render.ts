@@ -32,24 +32,31 @@ interface Part {
   color: Color | null;
 }
 
-/** Join PARTS into one line of at most MAX_STATUS_WIDTH characters, colouring each part. */
-function line(parts: Part[], theme: Theme): string {
+function width(parts: Part[]): number {
+  return parts.reduce((sum, part) => sum + [...part.text].length, 0);
+}
+
+/**
+ * One line of at most MAX_STATUS_WIDTH characters: BODY, cut with "…" where it must be, then
+ * TAIL whole. The tail carries the state flags, which matter most when the line is fullest.
+ */
+function line(body: Part[], tail: Part[], theme: Theme): string {
+  const room = MAX_STATUS_WIDTH - width(tail);
   const kept: Part[] = [];
-  let width = 0;
-  for (const part of parts) {
+  let used = 0;
+  for (const part of body) {
     const size = [...part.text].length;
-    if (width + size <= MAX_STATUS_WIDTH) {
+    if (used + size <= room) {
       kept.push(part);
-      width += size;
+      used += size;
       continue;
     }
-    const room = MAX_STATUS_WIDTH - width - 1;
-    const cut = [...part.text].slice(0, Math.max(room, 0)).join("");
+    const cut = [...part.text].slice(0, Math.max(room - used - 1, 0)).join("");
     if (cut) kept.push({ text: cut, color: part.color });
     kept.push({ text: "…", color: "dim" });
     break;
   }
-  return kept.map((part) => (part.color ? theme.fg(part.color, part.text) : part.text)).join("");
+  return [...kept, ...tail].map((part) => (part.color ? theme.fg(part.color, part.text) : part.text)).join("");
 }
 
 function segments(head: Part[], rest: Part[][]): Part[] {
@@ -103,12 +110,11 @@ export function renderStatus(view: View, theme: Theme): string | undefined {
       if (s.direct > 0) rest.push([{ text: `${s.direct} direct`, color: "warning" }]);
       rest.push(...channelParts(s));
       if (s.broadcast > 0) rest.push([{ text: `${s.broadcast} broadcast`, color: "accent" }]);
-      rest.push(...flagParts(view.flags, s.paused));
       const head: Part[] = [
         { text: ENVELOPE, color: envelopeColor(s) },
         { text: ` ${s.name}`, color: null },
       ];
-      return line(segments(head, rest), theme);
+      return line(segments(head, rest), segments([], flagParts(view.flags, s.paused)), theme);
     }
     case "legacy": {
       const head: Part[] = [{ text: ENVELOPE, color: view.ring ? "warning" : "dim" }];
@@ -116,8 +122,7 @@ export function renderStatus(view: View, theme: Theme): string | undefined {
       const rest: Part[][] = [];
       if (view.ring && view.ring.direct > 0) rest.push([{ text: `${view.ring.direct} direct`, color: "warning" }]);
       if (view.ring && view.ring.channel > 0) rest.push([{ text: `${view.ring.channel} channel`, color: "warning" }]);
-      rest.push(...flagParts(view.flags, false));
-      return line(segments(head, rest), theme);
+      return line(segments(head, rest), segments([], flagParts(view.flags, false)), theme);
     }
   }
 }
