@@ -37,6 +37,7 @@ describe("classifyCall", () => {
 describe("receiveHint", () => {
   test("names the tool that exists", () => {
     expect(receiveHint(["read", "agent_mail_receive", "mcp"])).toBe("the agent_mail_receive tool");
+    expect(receiveHint(["agent-mail_receive", "mcp"])).toBe("the agent-mail_receive tool");
     expect(receiveHint(["mcp__agent_mail__receive"])).toBe("the mcp__agent_mail__receive tool");
     expect(receiveHint(["mcp__agent_mail_receive", "mcp"])).toBe("the mcp__agent_mail_receive tool");
     expect(receiveHint(["mcp", "mcp__agent_mail"])).toBe('the mcp__agent_mail tool with tool "receive"');
@@ -69,6 +70,16 @@ describe("guardBash", () => {
     "nice -n 5 agent-mail read pi | grep x",
     "stdbuf -oL agent-mail watch pi | grep x",
     "env -i HOME=/h agent-mail read pi | head",
+    "x=$(agent-mail read pi | head)",
+    "(agent-mail read pi | head)",
+    "{ agent-mail read pi | tail; }",
+    "bash -c 'agent-mail read pi | head -3'",
+    'sh -c "agent-mail watch pi | grep x"',
+    "bash -lc 'cd /tmp && agent-mail read pi | tail'",
+    "bash <<'EOF'\nagent-mail read pi | head\nEOF",
+    "cat <<EOF | sh\nagent-mail read pi | tail\nEOF",
+    'agent-mail "read" pi | head',
+    "agent-mail read pi | timeout 5 head",
   ];
   for (const command of blocked) {
     test(`blocks: ${command}`, () => {
@@ -94,6 +105,9 @@ describe("guardBash", () => {
     'cat <<"DOC" > notes.md\nNever run agent-mail watch pi | grep x.\nDOC',
     "timeout 60 agent-mail pending pi | head",
     "sudo -u johnw agent-mail channels | grep fleet",
+    "bash -c 'agent-mail read pi'",
+    "bash -c 'echo hi' | head",
+    "x=$(agent-mail pending pi | head)",
   ];
   for (const command of passed) {
     test(`passes: ${JSON.stringify(command)}`, () => {

@@ -68,13 +68,17 @@ function unref<T extends { unref?: () => unknown }>(timer: T): T {
   return timer;
 }
 
-/** True while John has a draft in the TUI editor; never true outside the TUI. */
+/**
+ * True while John has a draft in the TUI editor; never true outside the TUI. An editor that
+ * cannot be read counts as holding a draft, so a failing context holds wakes rather than
+ * letting one through.
+ */
 function hasDraft(ctx: ExtensionContext): boolean {
   if (ctx.mode !== "tui") return false;
   try {
     return (ctx.ui.getEditorText?.() ?? "").trim() !== "";
   } catch {
-    return false;
+    return true;
   }
 }
 

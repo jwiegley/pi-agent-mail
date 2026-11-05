@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, test } from "bun:test";
-import { execFileSync } from "node:child_process";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 
 import { createAgentMailExtension, optionsFromEnv } from "../src/index.ts";
@@ -89,13 +89,16 @@ afterEach(() => {
   (globalThis as any)[Symbol.for("pi-agent-mail/process-slot")] = undefined;
 });
 
+/** pgrep's verdict on PATTERN: true when nothing matches; a pgrep error fails the test. */
+function nothingMatches(pattern: string): boolean {
+  const result = spawnSync("pgrep", ["-f", "--", pattern], { encoding: "utf8" });
+  if (result.status === 1) return true;
+  if (result.status === 0) return false;
+  throw new Error(`pgrep failed (${result.status}): ${result.stderr}`);
+}
+
 function noDoorbellLeft(): boolean {
-  try {
-    execFileSync("pgrep", ["-f", `--parent ${process.pid}`]);
-    return false;
-  } catch {
-    return true;
-  }
+  return nothingMatches(`--parent ${process.pid}`);
 }
 
 describe("registration", () => {
@@ -236,6 +239,72 @@ describe("a session end to end against a fake agent-mail", () => {
     await until(() => f.sent.length === 1);
     f.emit("session_shutdown", { reason: "quit" }, c.ctx);
     await until(noDoorbellLeft);
+  });
+
+  test("the doorbell check sees a running doorbell", async () => {
+    process.env.FAKE_MODE = "pi";
+    process.env.FAKE_JSON = JSON.stringify(STATUS);
+    const f = fakePi();
+    createAgentMailExtension({ bin: FAKE, env: process.env })(f.pi as any);
+    const c = fakeCtx("rpc");
+    f.emit("session_start", { reason: "startup" }, c.ctx);
+    await until(() => !noDoorbellLeft());
+    f.emit("session_shutdown", { reason: "quit" }, c.ctx);
+    await until(noDoorbellLeft);
+  });
+
+  test("session_shutdown ends an agent-mail run still in flight", async () => {
+    process.env.FAKE_MODE = "sleep";
+    const f = fakePi();
+    createAgentMailExtension({ bin: FAKE, env: process.env })(f.pi as any);
+    const c = fakeCtx("rpc");
+    f.emit("session_start", { reason: "startup" }, c.ctx);
+    // Anchored to the fixture's own command, so a shell whose command line mentions it never matches.
+    const probe = "fixtures/fake-agent-mail\\.sh pending --format json$";
+    await until(() => !nothingMatches(probe));
+    f.emit("session_shutdown", { reason: "quit" }, c.ctx);
+    await until(() => nothingMatches(probe), 3_000);
+  });
+
+  test("an editor that cannot be read holds the wake", async () => {
+    process.env.FAKE_MODE = "pi";
+    process.env.FAKE_JSON = JSON.stringify(STATUS);
+    const f = fakePi();
+    createAgentMailExtension({ bin: FAKE, env: process.env })(f.pi as any);
+    const c = fakeCtx("tui");
+    let broken = true;
+    (c.ctx.ui as any).getEditorText = () => {
+      if (broken) throw new Error("editor gone");
+      return "";
+    };
+    f.emit("session_start", { reason: "startup" }, c.ctx);
+    await until(() => c.statuses.some(([, text]) => text === "✉ pi · 1 direct · +fleet 2"));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(f.sent).toEqual([]);
+    broken = false;
+    f.emit("agent_settled", { aborted: false }, c.ctx);
+    await until(() => f.sent.length === 1);
+    f.emit("session_shutdown", { reason: "quit" }, c.ctx);
+    await until(noDoorbellLeft);
+  });
+
+  test("the cooldown runs on a monotonic clock, not the wall clock", async () => {
+    process.env.FAKE_MODE = "pi2";
+    process.env.FAKE_JSON = JSON.stringify(STATUS);
+    const realNow = Date.now;
+    Date.now = () => 0;
+    try {
+      const f = fakePi();
+      createAgentMailExtension({ bin: FAKE, env: process.env, cooldownSeconds: 1 })(f.pi as any);
+      const c = fakeCtx("rpc");
+      f.emit("session_start", { reason: "startup" }, c.ctx);
+      await until(() => f.sent.length === 2, 6_000);
+      expect(f.sent[1].message.details.digest).toBe("abcdefabcdef");
+      f.emit("session_shutdown", { reason: "quit" }, c.ctx);
+      await until(noDoorbellLeft);
+    } finally {
+      Date.now = realNow;
+    }
   });
 
   test("print mode starts nothing", async () => {
