@@ -110,6 +110,7 @@ describe("registration", () => {
         "tool_call",
         "tool_execution_end",
         "tool_execution_start",
+        "input",
         "ui_prompt_end",
         "ui_prompt_start",
       ].sort(),
@@ -183,6 +184,39 @@ describe("a session end to end against a fake agent-mail", () => {
     await until(() => f.sent.length === 1);
     f.emit("session_shutdown", { reason: "quit" }, c.ctx);
     await until(noDoorbellLeft);
+  });
+
+  test("a dialog whose end arrived before its start does not hold wakes forever", async () => {
+    process.env.FAKE_MODE = "pi";
+    process.env.FAKE_JSON = JSON.stringify(STATUS);
+    const f = fakePi();
+    createAgentMailExtension({ bin: FAKE, env: process.env })(f.pi as any);
+    const c = fakeCtx("rpc");
+    f.emit("ui_prompt_end", { reason: "ui_prompt" }, c.ctx);
+    f.emit("ui_prompt_start", { reason: "ui_prompt", kind: "custom" }, c.ctx);
+    f.emit("session_start", { reason: "startup" }, c.ctx);
+    await until(() => c.statuses.some(([, text]) => text === "✉ pi · 1 direct · +fleet 2"));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(f.sent).toEqual([]);
+    f.emit("input", { text: "hello", source: "rpc" }, c.ctx);
+    f.emit("agent_settled", { aborted: false }, c.ctx);
+    await until(() => f.sent.length === 1);
+    f.emit("session_shutdown", { reason: "quit" }, c.ctx);
+    await until(noDoorbellLeft);
+  });
+
+  test("on agent-mail 2.2 a session with no name source starts no doorbell and shows nothing", async () => {
+    const env: NodeJS.ProcessEnv = { PATH: process.env.PATH, HOME: process.env.HOME, FAKE_MODE: "exit2" };
+    const f = fakePi();
+    createAgentMailExtension({ bin: FAKE, env })(f.pi as any);
+    const c = fakeCtx("tui");
+    f.emit("session_start", { reason: "startup" }, c.ctx);
+    await new Promise((resolve) => setTimeout(resolve, 400));
+    expect(c.statuses.every(([, text]) => text === undefined)).toBe(true);
+    expect(noDoorbellLeft()).toBe(true);
+    await f.commands.get("mail").handler("", c.ctx);
+    expect(c.notices).toEqual(["agent-mail: inactive (no mailbox name for this session)"]);
+    f.emit("session_shutdown", { reason: "quit" }, c.ctx);
   });
 
   test("a draft in the TUI editor holds the wake", async () => {

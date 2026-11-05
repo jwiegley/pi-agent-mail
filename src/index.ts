@@ -37,6 +37,8 @@ export const SUBCOMMANDS = ["check", "pause", "resume", "restart"] as const;
 
 const SLOT_KEY = Symbol.for("pi-agent-mail/process-slot");
 const PLAIN: Theme = { fg: (_color, text) => text };
+// agent-mail's sources of a session's name (resolve_identity), as its environment carries them.
+const NAME_SOURCES = ["AGENT_MAIL_NAME", "AGENTDECK_TITLE", "AGENTDECK_IDENTITY_FILE", "AGENTDECK_INSTANCE_ID"] as const;
 
 function clampRefresh(seconds: number): number {
   return Math.min(MAX_REFRESH_SECONDS, Math.max(MIN_REFRESH_SECONDS, Math.round(seconds)));
@@ -86,7 +88,11 @@ export function createAgentMailExtension(options: AgentMailOptions = {}): (pi: E
 
   return function agentMail(pi: ExtensionAPI): void {
     let controller: Controller | null = null;
-    let promptsOpen = 0;
+    let runs: AbortController | null = null;
+    // A dialog waiting on John holds wakes. Pi delivers the start and end of a dialog in
+    // separate dispatches that can arrive out of order, so the hold also lifts when John
+    // types and when Pi settles, rather than counting and sticking.
+    let promptOpen = false;
 
     // agent-mail's rule, in every mode: never pipe read or watch into a cutter.
     pi.on("tool_call", (event) => {
@@ -99,14 +105,19 @@ export function createAgentMailExtension(options: AgentMailOptions = {}): (pi: E
 
     pi.on("session_start", (_event, ctx) => {
       controller?.stop();
+      runs?.abort();
       controller = null;
       if (options.disabled) return;
       const env = options.env ?? sessionEnvironment(process.env);
+      const aborter = new AbortController();
+      runs = aborter;
       const deps: Deps = {
         slot: processSlot(),
-        run: (args) => runAgentMail(bin, args, { env }),
+        run: (args) => runAgentMail(bin, args, { env, signal: aborter.signal }),
         startDoorbell: (onLine, onExit) => startDoorbell(bin, process.pid, onLine, onExit, { env }),
-        now: () => Date.now(),
+        // Monotonic, so a clock step never stretches the cooldown; the hand-over between
+        // runtimes stays inside this process, where it is comparable.
+        now: () => performance.now(),
         setTimeout: (fn, ms) => unref(setTimeout(fn, ms)),
         clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
         setInterval: (fn, ms) => unref(setInterval(fn, ms)),
@@ -115,11 +126,12 @@ export function createAgentMailExtension(options: AgentMailOptions = {}): (pi: E
         // a context that is being torn down answers "busy", "no tools" and "plain".
         isIdle: () => {
           try {
-            return ctx.isIdle() && promptsOpen === 0 && !hasDraft(ctx);
+            return ctx.isIdle() && !promptOpen && !hasDraft(ctx);
           } catch {
             return false;
           }
         },
+        hasNameSource: () => NAME_SOURCES.some((name) => (env[name] ?? "").trim() !== ""),
         toolNames: () => {
           try {
             return pi.getActiveTools();
@@ -154,19 +166,27 @@ export function createAgentMailExtension(options: AgentMailOptions = {}): (pi: E
     pi.on("session_shutdown", () => {
       controller?.stop();
       controller = null;
-      promptsOpen = 0;
+      runs?.abort();
+      runs = null;
+      promptOpen = false;
     });
 
     pi.on("agent_settled", (event) => {
+      promptOpen = false;
       void controller?.onSettled(Boolean((event as { aborted?: boolean } | undefined)?.aborted));
     });
 
     pi.on("ui_prompt_start", () => {
-      promptsOpen++;
+      promptOpen = true;
     });
 
     pi.on("ui_prompt_end", () => {
-      promptsOpen = Math.max(0, promptsOpen - 1);
+      promptOpen = false;
+    });
+
+    pi.on("input", () => {
+      promptOpen = false;
+      return undefined;
     });
 
     pi.on("tool_execution_start", (event) => {

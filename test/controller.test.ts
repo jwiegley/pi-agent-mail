@@ -25,7 +25,15 @@ function status(change: Record<string, unknown> = {}) {
   };
 }
 
-const ok = (stdout: string, code = 0): RunResult => ({ code, signal: null, stdout, timedOut: false, truncated: false, spawnError: null });
+const ok = (stdout: string, code = 0): RunResult => ({
+  code,
+  signal: null,
+  stdout,
+  timedOut: false,
+  truncated: false,
+  aborted: false,
+  spawnError: null,
+});
 const json = (value: unknown, code = 0) => ok(`${JSON.stringify(value)}\n`, code);
 const failure = (error: string, name: string | null = null) =>
   json({ v: 1, agent_mail: "2.3.0", name, error, problem: `the ${error} problem` }, 1);
@@ -48,6 +56,7 @@ function harness(script: Script, config: Partial<Config> = {}, slot: ProcessSlot
   const statuses: Array<string | undefined> = [];
   const bells: Bell[] = [];
   let tools: string[] = ["mcp"];
+  let nameSource = true;
   let depCalls = 0;
   const count = <T>(value: T): T => {
     depCalls++;
@@ -93,6 +102,7 @@ function harness(script: Script, config: Partial<Config> = {}, slot: ProcessSlot
       timers.delete(id as number);
     },
     isIdle: () => idle,
+    hasNameSource: () => nameSource,
     toolNames: () => tools,
     sendWake: (text, details) => {
       count(0);
@@ -120,6 +130,9 @@ function harness(script: Script, config: Partial<Config> = {}, slot: ProcessSlot
     },
     setTools(value: string[]) {
       tools = value;
+    },
+    setNameSource(value: boolean) {
+      nameSource = value;
     },
     lastStatus: () => statuses[statuses.length - 1],
     async advance(ms: number) {
@@ -221,6 +234,37 @@ describe("activation", () => {
     await settle();
     expect(h.lastStatus()).toBe("✉ pi · 1 direct · 2 channel");
     expect(h.wakes.length).toBe(1);
+  });
+
+  test("agent-mail 2.2 and no name source: inactive and silent, no doorbell", async () => {
+    const h = harness(() => ok("", 2));
+    h.setNameSource(false);
+    await h.controller.start("tui");
+    expect(h.bells).toEqual([]);
+    expect(h.timers.size).toBe(0);
+    expect(h.statuses.every((s) => s === undefined)).toBe(true);
+    expect(await h.controller.command("")).toBe("agent-mail: inactive (no mailbox name for this session)");
+  });
+
+  test("a spawn failure while retrying keeps retrying", async () => {
+    let answer: "missing" | "spawn" | "ok" = "missing";
+    const h = harness((args) => {
+      if (args.join(" ") === "pending --format json") {
+        if (answer === "missing") return failure("mailbox_missing");
+        if (answer === "spawn") return { ...ok(""), code: null, spawnError: "spawn agent-mail EMFILE" };
+        return json(status());
+      }
+      return fullScript()(args);
+    });
+    await h.controller.start("tui");
+    answer = "spawn";
+    await h.advance(30_000);
+    expect(h.lastStatus()).toBe("✉ agent-mail: agent-mail could not run");
+    expect(h.timers.size).toBe(1);
+    answer = "ok";
+    await h.advance(30_000);
+    expect(h.lastStatus()).toBe("✉ pi · +fleet");
+    expect(h.bells.length).toBe(1);
   });
 
   test("agent-mail missing: inactive, no retries", async () => {
@@ -403,12 +447,37 @@ describe("one Pi process", () => {
     first.bells[0].onLine(RING());
     await settle();
     first.controller.stop();
-    expect(slot).toEqual({ owner: null, carry: { deferred: true, wakeOn: true, lastWakeAt: Number.NEGATIVE_INFINITY } });
+    expect(slot).toEqual({
+      owner: null,
+      carry: { deferred: true, wakeOn: true, lastWakeAt: Number.NEGATIVE_INFINITY, name: "pi" },
+    });
     const second = harness(ringing(), {}, slot);
     await second.controller.start("tui");
     await settle();
     expect(second.wakes.length).toBe(0);
     expect(slot.carry).toBeNull();
+    await second.advance(30_000);
+    expect(second.wakes.length).toBe(1);
+  });
+
+  test("in legacy mode the name learned from a ring carries over, so an owed wake is still checked", async () => {
+    const slot: ProcessSlot = { owner: null, carry: null };
+    const legacy = () =>
+      harness((args) => {
+        if (args.join(" ") === "pending --format json") return ok("", 2);
+        if (args.join(" ") === "pending pi --format context") return ok(`${RING()}\n`);
+        throw new Error(`unexpected ${args.join(" ")}`);
+      }, {}, slot);
+    const first = legacy();
+    await first.controller.start("tui");
+    first.setIdle(false);
+    first.bells[0].onLine(RING());
+    await settle();
+    first.controller.stop();
+    const second = legacy();
+    await second.controller.start("tui");
+    expect(second.lastStatus()).toBe("✉ pi");
+    expect(second.wakes.length).toBe(0);
     await second.advance(30_000);
     expect(second.wakes.length).toBe(1);
   });
@@ -454,6 +523,24 @@ describe("one Pi process", () => {
     expect(h.wakes.length).toBe(0);
     await h.advance(30_000);
     expect(h.wakes.length).toBe(1);
+  });
+
+  test("Escape also stops a cooldown that was already counting down", async () => {
+    const h = harness(ringing());
+    await h.controller.start("tui");
+    await h.advance(2_000);
+    h.bells[0].onLine(RING());
+    await settle();
+    expect(h.wakes.length).toBe(1);
+    await h.advance(5_000);
+    h.bells[0].onLine(RING("pi", 1, 3, "cccccccccccc"));
+    await settle();
+    await h.advance(3_000);
+    await h.controller.onSettled(true);
+    await h.advance(15_000);
+    expect(h.wakes.length).toBe(1);
+    await h.advance(5_000);
+    expect(h.wakes.length).toBe(2);
   });
 
   test("a tick while Pi is not idle wakes nobody", async () => {

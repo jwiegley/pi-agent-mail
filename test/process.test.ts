@@ -1,4 +1,5 @@
 import { describe, expect, test } from "bun:test";
+import { spawnSync } from "node:child_process";
 import { join } from "node:path";
 
 import { runAgentMail, sessionEnvironment, startDoorbell } from "../src/process.ts";
@@ -42,7 +43,15 @@ function env(mode: string, extra: Record<string, string> = {}): NodeJS.ProcessEn
 describe("runAgentMail", () => {
   test("returns stdout and the exit code", async () => {
     const result = await runAgentMail(FAKE, ["pending", "--format", "json"], { env: env("json", { FAKE_JSON: '{"v":1}' }) });
-    expect(result).toEqual({ code: 0, signal: null, stdout: '{"v":1}\n', timedOut: false, truncated: false, spawnError: null });
+    expect(result).toEqual({
+      code: 0,
+      signal: null,
+      stdout: '{"v":1}\n',
+      timedOut: false,
+      truncated: false,
+      aborted: false,
+      spawnError: null,
+    });
   });
 
   test("passes its arguments without a shell", async () => {
@@ -67,6 +76,27 @@ describe("runAgentMail", () => {
     const result = await runAgentMail(FAKE, [], { env: env("flood") });
     expect(result.truncated).toBe(true);
     expect(result.stdout.length).toBeLessThanOrEqual(65_536);
+  });
+
+  test("an abort ends a running agent-mail at once, with everything it started", async () => {
+    const abort = new AbortController();
+    const started = Date.now();
+    const pending = runAgentMail(FAKE, [], { env: env("sleep"), signal: abort.signal });
+    await new Promise((resolve) => setTimeout(resolve, 200));
+    abort.abort();
+    const result = await pending;
+    expect(result.aborted).toBe(true);
+    expect(Date.now() - started).toBeLessThan(3_000);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(spawnSync("pgrep", ["-f", "fake-agent-mail.sh"]).status).not.toBe(0);
+  });
+
+  test("an abort before the start runs nothing", async () => {
+    const abort = new AbortController();
+    abort.abort();
+    const result = await runAgentMail(FAKE, [], { env: env("args"), signal: abort.signal });
+    expect(result.aborted).toBe(true);
+    expect(result.stdout).toBe("");
   });
 
   test("reports a program that is not there", async () => {

@@ -53,6 +53,7 @@ export interface RunResult {
   stdout: string;
   timedOut: boolean;
   truncated: boolean;
+  aborted: boolean;
   spawnError: string | null;
 }
 
@@ -60,6 +61,8 @@ export interface RunOptions {
   timeoutMs?: number;
   maxBytes?: number;
   env?: NodeJS.ProcessEnv;
+  /** Aborting ends the run at once, with anything it started; session_shutdown aborts every run. */
+  signal?: AbortSignal;
 }
 
 // Each child leads its own process group, so stopping it also stops anything
@@ -90,23 +93,36 @@ export function runAgentMail(bin: string, args: readonly string[], opts: RunOpti
   const timeoutMs = opts.timeoutMs ?? RUN_TIMEOUT_MS;
   const maxBytes = opts.maxBytes ?? RUN_MAX_BYTES;
   return new Promise((resolve) => {
+    const nothing = { code: null, signal: null, stdout: "", timedOut: false, truncated: false };
+    if (opts.signal?.aborted) {
+      resolve({ ...nothing, aborted: true, spawnError: null });
+      return;
+    }
     const child = launch(bin, args, opts.env);
     if (typeof child === "string") {
-      resolve({ code: null, signal: null, stdout: "", timedOut: false, truncated: false, spawnError: child });
+      resolve({ ...nothing, aborted: false, spawnError: child });
       return;
     }
     const chunks: Buffer[] = [];
     let size = 0;
     let truncated = false;
     let timedOut = false;
+    let aborted = false;
     let spawnError: string | null = null;
     let settled = false;
+    const onAbort = () => {
+      aborted = true;
+      terminate(child);
+      finish(null, null);
+    };
     const finish = (code: number | null, signal: string | null) => {
       if (settled) return;
       settled = true;
       clearTimeout(timer);
-      resolve({ code, signal, stdout: Buffer.concat(chunks).toString("utf8"), timedOut, truncated, spawnError });
+      opts.signal?.removeEventListener("abort", onAbort);
+      resolve({ code, signal, stdout: Buffer.concat(chunks).toString("utf8"), timedOut, truncated, aborted, spawnError });
     };
+    opts.signal?.addEventListener("abort", onAbort, { once: true });
     const timer = setTimeout(() => {
       timedOut = true;
       terminate(child);

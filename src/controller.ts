@@ -24,6 +24,8 @@ export interface Carry {
   deferred: boolean;
   wakeOn: boolean;
   lastWakeAt: number;
+  /** The bound name; in legacy mode the only way the next runtime knows it before a ring. */
+  name: string | null;
 }
 
 /** Per-process record: which instance is active, and what the last one handed over. */
@@ -42,6 +44,8 @@ export interface Deps {
   setInterval(fn: () => void, ms: number): unknown;
   clearInterval(handle: unknown): void;
   isIdle(): boolean;
+  /** Whether agent-mail's environment holds any source of a session name. */
+  hasNameSource(): boolean;
   toolNames(): readonly string[];
   sendWake(text: string, details: WakeDetails): void;
   setStatus(text: string | undefined): void;
@@ -87,6 +91,7 @@ export class Controller {
   private wakeOn: boolean;
   private deferred = false;
   private owed = false;
+  private carriedName: string | null = null;
   private lastWakeAt = Number.NEGATIVE_INFINITY;
   private cooldownTimer: unknown = null;
   private interval: unknown = null;
@@ -121,6 +126,7 @@ export class Controller {
       this.wakeOn = slot.carry.wakeOn;
       this.lastWakeAt = slot.carry.lastWakeAt;
       this.owed = slot.carry.deferred;
+      this.carriedName = slot.carry.name;
       slot.carry = null;
     }
     this.allowed = true;
@@ -137,7 +143,12 @@ export class Controller {
     this.stopped = true;
     if (this.deps.slot.owner === this) {
       this.deps.slot.owner = null;
-      this.deps.slot.carry = { deferred: this.deferred || this.owed, wakeOn: this.wakeOn, lastWakeAt: this.lastWakeAt };
+      this.deps.slot.carry = {
+        deferred: this.deferred || this.owed,
+        wakeOn: this.wakeOn,
+        lastWakeAt: this.lastWakeAt,
+        name: this.name ?? this.carriedName,
+      };
     }
     this.bellGen++;
     this.bell?.stop();
@@ -209,11 +220,19 @@ export class Controller {
     if (this.mode === "error") return this.probe();
   }
 
-  /** The first probe, without a name, and the retries while in error. */
+  /**
+   * The first probe, without a name, and the retries while in error. Only a first probe that
+   * cannot start agent-mail at all means it is not installed; while retrying, a failed start
+   * (a link replaced by a switch, no file descriptors) is one more failure to retry.
+   */
   private async probe(): Promise<void> {
+    const first = this.mode === "off" || this.mode === "inactive";
     const result = await this.deps.run(["pending", "--format", "json"]);
     if (this.stopped) return;
-    if (result.spawnError) return this.becomeInactive(describeFailure(result, null));
+    if (result.spawnError) {
+      const why = describeFailure(result, null);
+      return first ? this.becomeInactive(why) : this.becomeError("agent-mail could not run", why);
+    }
     const parsed = result.timedOut || result.truncated ? null : parseStatus(result.stdout);
     if (parsed?.kind === "ok" && result.code === 0) return this.becomeFull(parsed.status);
     if (parsed?.kind === "error" && parsed.error === "no_identity") return this.becomeInactive("no mailbox name for this session");
@@ -221,7 +240,12 @@ export class Controller {
       this.name = parsed.name;
       return this.becomeError(parsed.error.replace(/_/g, " "), parsed.problem);
     }
-    if (result.code === 2 && result.stdout.trim() === "") return this.becomeLegacy();
+    if (result.code === 2 && result.stdout.trim() === "") {
+      // agent-mail 2.2 cannot say whether this session has a name; the doorbell would fail on
+      // none, so a session without any name source stays silent, as it does on 2.3.
+      if (!this.deps.hasNameSource()) return this.becomeInactive("no mailbox name for this session");
+      return this.becomeLegacy();
+    }
     return this.becomeError("no usable answer", describeFailure(result, parsed));
   }
 
@@ -281,6 +305,8 @@ export class Controller {
   private becomeLegacy(): void {
     this.mode = "legacy";
     this.problem = null;
+    if (this.name === null) this.name = this.carriedName;
+    this.carriedName = null;
     this.startBell();
     this.takeOwed();
     this.ensureInterval();
@@ -444,6 +470,10 @@ export class Controller {
    */
   async onSettled(aborted = false): Promise<void> {
     if (this.stopped || (this.mode !== "full" && this.mode !== "legacy")) return;
+    if (aborted && this.cooldownTimer !== null) {
+      this.deps.clearTimeout(this.cooldownTimer);
+      this.cooldownTimer = null;
+    }
     this.background(this.refresh());
     if (this.deferred && !aborted) {
       try {
