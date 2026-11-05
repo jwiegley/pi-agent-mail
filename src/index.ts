@@ -1,0 +1,177 @@
+// pi-agent-mail: a Pi extension that keeps a session with an agent-mail name
+// in touch with its mailbox. It runs agent-mail's doorbell and wakes the
+// agent with a fixed notice when peer mail waits, watches the agent's own
+// agent-mail tool calls, holds back the one CLI misuse that loses mail, and
+// keeps a status light of the subscribed channels and what waits in each.
+// It never receives mail itself: the agent-mail MCP server stays the reader.
+
+import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+
+import { type Config, Controller, type Deps, type ProcessSlot } from "./controller.ts";
+import { runAgentMail, sessionEnvironment, startDoorbell } from "./process.ts";
+import type { Theme } from "./render.ts";
+import { guardBash } from "./tools.ts";
+
+export interface AgentMailOptions {
+  /** The agent-mail executable; default `agent-mail` on PATH. */
+  bin?: string;
+  /** Start with automatic wakes on (default) or off. */
+  wake?: boolean;
+  /** Seconds between refreshes of the light, 10 to 600 (default 30). */
+  refreshSeconds?: number;
+  /** Seconds between automatic wakes (default 20). */
+  cooldownSeconds?: number;
+  /** Do nothing but the bash guard. */
+  disabled?: boolean;
+  /** The environment agent-mail runs with; default the managed MCP server's set, taken from Pi's. */
+  env?: NodeJS.ProcessEnv;
+}
+
+export const DEFAULT_REFRESH_SECONDS = 30;
+export const MIN_REFRESH_SECONDS = 10;
+export const MAX_REFRESH_SECONDS = 600;
+export const DEFAULT_COOLDOWN_SECONDS = 20;
+export const STATUS_KEY = "agent-mail";
+export const MESSAGE_TYPE = "agent-mail";
+export const SUBCOMMANDS = ["check", "pause", "resume", "restart"] as const;
+
+const SLOT_KEY = Symbol.for("pi-agent-mail/process-slot");
+const PLAIN: Theme = { fg: (_color, text) => text };
+
+function clampRefresh(seconds: number): number {
+  return Math.min(MAX_REFRESH_SECONDS, Math.max(MIN_REFRESH_SECONDS, Math.round(seconds)));
+}
+
+/** Options from PI_AGENT_MAIL, PI_AGENT_MAIL_BIN, PI_AGENT_MAIL_WAKE and PI_AGENT_MAIL_REFRESH. */
+export function optionsFromEnv(env: Record<string, string | undefined>): AgentMailOptions {
+  const options: AgentMailOptions = {};
+  if (env.PI_AGENT_MAIL?.trim().toLowerCase() === "off") options.disabled = true;
+  const bin = env.PI_AGENT_MAIL_BIN?.trim();
+  if (bin) options.bin = bin;
+  if (env.PI_AGENT_MAIL_WAKE?.trim() === "0") options.wake = false;
+  const refresh = env.PI_AGENT_MAIL_REFRESH?.trim();
+  if (refresh && Number.isFinite(Number(refresh))) options.refreshSeconds = clampRefresh(Number(refresh));
+  return options;
+}
+
+/** The record every instance in this Pi process shares, even across reloads of this module. */
+function processSlot(): ProcessSlot {
+  const holder = globalThis as unknown as Record<symbol, ProcessSlot | undefined>;
+  holder[SLOT_KEY] ??= { owner: null, carry: null };
+  return holder[SLOT_KEY];
+}
+
+function unref<T extends { unref?: () => unknown }>(timer: T): T {
+  timer.unref?.();
+  return timer;
+}
+
+/** True while John has a draft in the TUI editor; never true outside the TUI. */
+function hasDraft(ctx: ExtensionContext): boolean {
+  if (ctx.mode !== "tui") return false;
+  try {
+    return (ctx.ui.getEditorText?.() ?? "").trim() !== "";
+  } catch {
+    return false;
+  }
+}
+
+export function createAgentMailExtension(options: AgentMailOptions = {}): (pi: ExtensionAPI) => void {
+  const bin = options.bin ?? "agent-mail";
+  const config: Config = {
+    wake: options.wake ?? true,
+    refreshMs: clampRefresh(options.refreshSeconds ?? DEFAULT_REFRESH_SECONDS) * 1_000,
+    cooldownMs: Math.max(0, options.cooldownSeconds ?? DEFAULT_COOLDOWN_SECONDS) * 1_000,
+  };
+
+  return function agentMail(pi: ExtensionAPI): void {
+    let controller: Controller | null = null;
+    let promptsOpen = 0;
+
+    // agent-mail's rule, in every mode: never pipe read or watch into a cutter.
+    pi.on("tool_call", (event) => {
+      if (event.toolName !== "bash") return undefined;
+      const command = (event.input as { command?: unknown } | undefined)?.command;
+      if (typeof command !== "string") return undefined;
+      const reason = guardBash(command);
+      return reason ? { block: true, reason } : undefined;
+    });
+
+    pi.on("session_start", (_event, ctx) => {
+      controller?.stop();
+      controller = null;
+      if (options.disabled) return;
+      const env = options.env ?? sessionEnvironment(process.env);
+      const deps: Deps = {
+        slot: processSlot(),
+        run: (args) => runAgentMail(bin, args, { env }),
+        startDoorbell: (onLine, onExit) => startDoorbell(bin, process.pid, onLine, onExit, { env }),
+        now: () => Date.now(),
+        setTimeout: (fn, ms) => unref(setTimeout(fn, ms)),
+        clearTimeout: (handle) => clearTimeout(handle as ReturnType<typeof setTimeout>),
+        setInterval: (fn, ms) => unref(setInterval(fn, ms)),
+        clearInterval: (handle) => clearInterval(handle as ReturnType<typeof setInterval>),
+        isIdle: () => ctx.isIdle() && promptsOpen === 0 && !hasDraft(ctx),
+        toolNames: () => pi.getActiveTools(),
+        sendWake: (text, details) =>
+          pi.sendMessage(
+            { customType: MESSAGE_TYPE, content: text, display: true, details },
+            { triggerTurn: true, deliverAs: "followUp" },
+          ),
+        setStatus: (text) => {
+          try {
+            if (ctx.hasUI) ctx.ui.setStatus(STATUS_KEY, text);
+          } catch {
+            // A runtime being torn down may refuse UI calls; the light is best effort.
+          }
+        },
+        theme: () => (ctx.ui?.theme as Theme | undefined) ?? PLAIN,
+      };
+      controller = new Controller(deps, config);
+      void controller.start(ctx.mode);
+    });
+
+    pi.on("session_shutdown", () => {
+      controller?.stop();
+      controller = null;
+      promptsOpen = 0;
+    });
+
+    pi.on("agent_settled", (event) => {
+      void controller?.onSettled(Boolean((event as { aborted?: boolean } | undefined)?.aborted));
+    });
+
+    pi.on("ui_prompt_start", () => {
+      promptsOpen++;
+    });
+
+    pi.on("ui_prompt_end", () => {
+      promptsOpen = Math.max(0, promptsOpen - 1);
+    });
+
+    pi.on("tool_execution_start", (event) => {
+      controller?.onToolStart(event.toolCallId, event.toolName, event.args);
+    });
+
+    pi.on("tool_execution_end", (event) => {
+      controller?.onToolEnd(event.toolCallId, event.toolName);
+    });
+
+    pi.registerCommand("mail", {
+      description: "agent-mail: this session's channels and waiting mail; /mail check | pause | resume | restart",
+      getArgumentCompletions: (prefix: string) => {
+        const items = SUBCOMMANDS.filter((word) => word.startsWith(prefix.trim())).map((word) => ({ value: word, label: word }));
+        return items.length > 0 ? items : null;
+      },
+      handler: async (args, ctx) => {
+        let text: string;
+        if (options.disabled) text = "agent-mail: off (PI_AGENT_MAIL=off)";
+        else if (controller) text = await controller.command(args);
+        else text = "agent-mail: not started";
+        if (ctx.hasUI) ctx.ui.notify(text, "info");
+      },
+    });
+  };
+}
+
+export default createAgentMailExtension(optionsFromEnv(process.env));
