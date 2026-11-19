@@ -293,7 +293,7 @@ def full_run(program, adapter):
         bootstrap = adapter_bootstrap(mailbox, program, adapter) if adapter else None
         pi = Pi(mailbox, program, bootstrap, set_bin=not USE_ENTRY_BIN)
         pid = pi.process.pid
-        pi.wait(status(f"✉ {NAME} · +notes · +ops"), "the first status light")
+        pi.wait(status(f"✉ {NAME} · +notes · ++ops"), "the first status light")
         time.sleep(1)
         ok(len(doorbells_for(pid)) == 1, f"Pi {pid} runs {len(doorbells_for(pid))} doorbells, not one")
 
@@ -301,7 +301,7 @@ def full_run(program, adapter):
         time.sleep(2.5)  # agent-mail counts a post only once its 2 s settle window has passed
         pi.prompt("mail-1", "/mail")
         pi.wait(notice("+notes: 1 waiting (quiet)"), "/mail showing the quiet post")
-        pi.wait(status(f"✉ {NAME} · +notes 1 · +ops"), "the light counting the quiet post")
+        pi.wait(status(f"✉ {NAME} · +notes 1 · ++ops"), "the light counting the quiet post")
         ok(not any(e.get("type") == "agent_start" for e in pi.events), "a quiet post started a turn")
 
         mailbox.send(NAME, "hello", "direct mail for the end-to-end run")
@@ -312,7 +312,7 @@ def full_run(program, adapter):
             text = result_text(end)
             ok(f"for {NAME}" in text and "direct id=" in text and "from=peer" in text, f"receive delivered nothing: {text[:300]}")
             pi.wait(settled, "the wake turn to settle")
-            pi.wait(status(f"✉ {NAME} · +notes · +ops"), "the light after receive")
+            pi.wait(status(f"✉ {NAME} · +notes · ++ops"), "the light after receive")
             ok("no mail for testpi" in mailbox.run("pending", NAME, "--format", "human"), "mail still waits after receive")
         else:
             pi.wait(lambda e: e.get("type") == "message_end" and "no-adapter" in json.dumps(e.get("message")), "the faux reply")
@@ -339,7 +339,7 @@ def replacement_run(program):
         mailbox = Mailbox(Path(root), program)
         pi = Pi(mailbox, program, set_bin=not USE_ENTRY_BIN)
         pid = pi.process.pid
-        light = status(f"✉ {NAME} · +notes · +ops")
+        light = status(f"✉ {NAME} · +notes · ++ops")
         pi.wait(light, "the light before the replacement")
         time.sleep(1)
         ok(len(doorbells_for(pid)) == 1, f"one doorbell before the replacement, not {len(doorbells_for(pid))}")

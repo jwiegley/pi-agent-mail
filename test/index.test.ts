@@ -147,7 +147,7 @@ describe("a session end to end against a fake agent-mail", () => {
     createAgentMailExtension({ bin: FAKE, env: process.env })(f.pi as any);
     const c = fakeCtx("rpc");
     f.emit("session_start", { reason: "startup" }, c.ctx);
-    await until(() => c.statuses.some(([, text]) => text === "✉ pi · 1 direct · +fleet 2"));
+    await until(() => c.statuses.some(([, text]) => text === "✉ pi · 1 direct · ++fleet 2"));
     await until(() => f.sent.length === 1);
     expect(f.sent[0].message.customType).toBe("agent-mail");
     expect(f.sent[0].message.display).toBe(true);
@@ -172,7 +172,7 @@ describe("a session end to end against a fake agent-mail", () => {
     const c = fakeCtx("rpc");
     f.emit("ui_prompt_start", { reason: "ui_prompt", kind: "confirm" }, c.ctx);
     f.emit("session_start", { reason: "startup" }, c.ctx);
-    await until(() => c.statuses.some(([, text]) => text === "✉ pi · 1 direct · +fleet 2"));
+    await until(() => c.statuses.some(([, text]) => text === "✉ pi · 1 direct · ++fleet 2"));
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(f.sent).toEqual([]);
     f.emit("ui_prompt_end", { reason: "ui_prompt" }, c.ctx);
@@ -191,7 +191,7 @@ describe("a session end to end against a fake agent-mail", () => {
     f.emit("ui_prompt_end", { reason: "ui_prompt" }, c.ctx);
     f.emit("ui_prompt_start", { reason: "ui_prompt", kind: "custom" }, c.ctx);
     f.emit("session_start", { reason: "startup" }, c.ctx);
-    await until(() => c.statuses.some(([, text]) => text === "✉ pi · 1 direct · +fleet 2"));
+    await until(() => c.statuses.some(([, text]) => text === "✉ pi · 1 direct · ++fleet 2"));
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(f.sent).toEqual([]);
     f.emit("input", { text: "hello", source: "rpc" }, c.ctx);
@@ -224,7 +224,7 @@ describe("a session end to end against a fake agent-mail", () => {
     let draft = "half a thought";
     (c.ctx.ui as any).getEditorText = () => draft;
     f.emit("session_start", { reason: "startup" }, c.ctx);
-    await until(() => c.statuses.some(([, text]) => text === "✉ pi · 1 direct · +fleet 2"));
+    await until(() => c.statuses.some(([, text]) => text === "✉ pi · 1 direct · ++fleet 2"));
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(f.sent).toEqual([]);
     draft = "";
@@ -271,7 +271,7 @@ describe("a session end to end against a fake agent-mail", () => {
       return "";
     };
     f.emit("session_start", { reason: "startup" }, c.ctx);
-    await until(() => c.statuses.some(([, text]) => text === "✉ pi · 1 direct · +fleet 2"));
+    await until(() => c.statuses.some(([, text]) => text === "✉ pi · 1 direct · ++fleet 2"));
     await new Promise((resolve) => setTimeout(resolve, 300));
     expect(f.sent).toEqual([]);
     broken = false;

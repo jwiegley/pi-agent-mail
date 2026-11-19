@@ -74,16 +74,23 @@ function flagParts(flags: Flags, paused: boolean): Part[][] {
   return out;
 }
 
+/**
+ * The channels of the footer. Every join subscribes to the default channel, so it says nothing
+ * while it is quiet and is drawn only while posts wait there, or when it is missing. A channel is
+ * drawn as it is typed on the join line: `++name` for a wake subscription, `+name` for a quiet one.
+ */
 function channelParts(status: MailStatus): Part[][] {
-  const waiting = status.channels
+  const drawn = status.channels.filter((c) => c.name !== status.defaultChannel || c.unread > 0 || c.missing);
+  const waiting = drawn
     .filter((c) => c.unread > 0 && !c.missing)
     .sort((a, b) => b.unread - a.unread || a.name.localeCompare(b.name));
-  const others = status.channels.filter((c) => !(c.unread > 0 && !c.missing)).sort((a, b) => a.name.localeCompare(b.name));
+  const others = drawn.filter((c) => !(c.unread > 0 && !c.missing)).sort((a, b) => a.name.localeCompare(b.name));
   const ordered = [...waiting, ...others];
   const shown = ordered.slice(0, MAX_CHANNEL_SEGMENTS).map((c): Part[] => {
-    if (c.missing) return [{ text: `+${c.name} ?`, color: "warning" }];
-    if (c.unread === 0) return [{ text: `+${c.name}`, color: "dim" }];
-    return [{ text: `+${c.name} ${c.unread}`, color: c.wake ? "warning" : "accent" }];
+    const name = `${c.wake ? "++" : "+"}${c.name}`;
+    if (c.missing) return [{ text: `${name} ?`, color: "warning" }];
+    if (c.unread === 0) return [{ text: name, color: "dim" }];
+    return [{ text: `${name} ${c.unread}`, color: c.wake ? "warning" : "accent" }];
   });
   if (ordered.length > MAX_CHANNEL_SEGMENTS) {
     shown.push([{ text: `+${ordered.length - MAX_CHANNEL_SEGMENTS} more`, color: "dim" }]);

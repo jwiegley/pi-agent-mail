@@ -34,7 +34,7 @@ function full(change: Partial<MailStatus> = {}, flags: Partial<Flags> = {}): Vie
 
 describe("renderStatus, full mode", () => {
   test("nothing waiting", () => {
-    expect(renderStatus(full(), plain)).toBe("✉ pi · +fleet · +nix-config");
+    expect(renderStatus(full(), plain)).toBe("✉ pi · ++nix-config");
     expect(renderStatus(full(), tagged)?.startsWith("<dim>✉</dim> pi")).toBe(true);
   });
 
@@ -45,7 +45,7 @@ describe("renderStatus, full mode", () => {
       channels: [chan("fleet", 2), chan("nix-config", 0, { write: true })],
       ring: { digest: "0123456789ab", direct: 1, channel: 2 },
     });
-    expect(renderStatus(view, plain)).toBe("✉ pi · 1 direct · +fleet 2 · +nix-config · 1 broadcast");
+    expect(renderStatus(view, plain)).toBe("✉ pi · 1 direct · ++fleet 2 · ++nix-config · 1 broadcast");
     expect(renderStatus(view, tagged)?.startsWith("<warning>✉</warning>")).toBe(true);
   });
 
@@ -58,19 +58,41 @@ describe("renderStatus, full mode", () => {
     expect(renderStatus(broadcast, tagged)?.startsWith("<accent>✉</accent>")).toBe(true);
   });
 
+  test("the default channel is drawn only while posts wait there", () => {
+    const quietFleet = [chan("fleet", 0, { wake: false }), chan("nix-config", 0, { wake: false })];
+    expect(renderStatus(full({ channels: quietFleet }), plain)).toBe("✉ pi · +nix-config");
+    expect(renderStatus(full({ channels: [chan("fleet", 0, { wake: false })] }), plain)).toBe("✉ pi");
+    const waiting = [chan("fleet", 2, { wake: false }), chan("nix-config", 0, { wake: false })];
+    expect(renderStatus(full({ channels: waiting }), plain)).toBe("✉ pi · +fleet 2 · +nix-config");
+    const missing = [chan("fleet", 0, { missing: true })];
+    expect(renderStatus(full({ channels: missing }), plain)).toBe("✉ pi · ++fleet ?");
+    const other = full({ defaultChannel: "notes", channels: [chan("fleet", 0, { wake: false }), chan("notes", 0, { wake: false })] });
+    expect(renderStatus(other, plain)).toBe("✉ pi · +fleet");
+  });
+
+  test("a wake subscription is drawn ++, a quiet one +, as on the join line", () => {
+    const channels = [chan("alerts", 0, { wake: true }), chan("notes", 0, { wake: false })];
+    expect(renderStatus(full({ channels }), plain)).toBe("✉ pi · ++alerts · +notes");
+  });
+
+  test("the hidden default channel does not count toward the shown channels or +N more", () => {
+    const channels = ["a", "b", "c", "d", "e", "f", "fleet"].map((n) => chan(n, 0, { wake: false }));
+    expect(renderStatus(full({ channels }), plain)).toBe("✉ pi · +a · +b · +c · +d · +e · +f");
+  });
+
   test("a missing channel", () => {
-    expect(renderStatus(full({ channels: [chan("gone", 0, { missing: true })] }), plain)).toBe("✉ pi · +gone ?");
+    expect(renderStatus(full({ channels: [chan("gone", 0, { missing: true })] }), plain)).toBe("✉ pi · ++gone ?");
   });
 
   test("eight channels, two waiting", () => {
     const channels = ["a", "b", "c", "d", "e", "f", "g", "h"].map((n) => chan(n, n === "g" ? 1 : n === "c" ? 4 : 0));
-    expect(renderStatus(full({ channels }), plain)).toBe("✉ pi · +c 4 · +g 1 · +a · +b · +d · +e · +2 more");
+    expect(renderStatus(full({ channels }), plain)).toBe("✉ pi · ++c 4 · ++g 1 · ++a · ++b · ++d · ++e · +2 more");
   });
 
   test("flags, in order", () => {
     const view = full({ paused: true }, { wakeOff: true, doorbellStopped: true, stale: true });
     expect(renderStatus(view, plain)).toBe(
-      "✉ pi · +fleet · +nix-config · wake off · doorbell stopped · agent-mail paused · stale",
+      "✉ pi · ++nix-config · wake off · doorbell stopped · agent-mail paused · stale",
     );
   });
 
@@ -80,7 +102,7 @@ describe("renderStatus, full mode", () => {
     const text = renderStatus(view, plain) ?? "";
     expect([...text].length).toBeLessThanOrEqual(MAX_STATUS_WIDTH);
     expect(text.endsWith(" · wake off · doorbell stopped · agent-mail paused · stale")).toBe(true);
-    expect(text.startsWith("✉ pi · 4 direct · +aaaaaaaaaaaaaaaaaaaa 3")).toBe(true);
+    expect(text.startsWith("✉ pi · 4 direct · ++aaaaaaaaaaaaaaaaaaaa 3")).toBe(true);
     expect(text).toContain("…");
   });
 

@@ -185,7 +185,7 @@ describe("activation", () => {
     await h.controller.start("tui");
     expect(h.runs).toEqual([["pending", "--format", "json"]]);
     expect(h.bells.length).toBe(1);
-    expect(h.lastStatus()).toBe("✉ pi · +fleet");
+    expect(h.lastStatus()).toBe("✉ pi");
     await h.advance(30_000);
     expect(h.runs[1]).toEqual(["pending", "pi", "--format", "json"]);
   });
@@ -218,7 +218,7 @@ describe("activation", () => {
     await h.advance(30_000);
     expect(h.runs[1]).toEqual(["pending", "--format", "json"]);
     expect(h.bells.length).toBe(1);
-    expect(h.lastStatus()).toBe("✉ pi · +fleet");
+    expect(h.lastStatus()).toBe("✉ pi");
   });
 
   test("agent-mail 2.2 (exit 2, no JSON): legacy mode, named by the first ring", async () => {
@@ -263,7 +263,7 @@ describe("activation", () => {
     expect(h.timers.size).toBe(1);
     answer = "ok";
     await h.advance(30_000);
-    expect(h.lastStatus()).toBe("✉ pi · +fleet");
+    expect(h.lastStatus()).toBe("✉ pi");
     expect(h.bells.length).toBe(1);
   });
 
@@ -490,7 +490,7 @@ describe("one Pi process", () => {
     first.controller.stop();
     const second = harness(fullScript(), {}, slot);
     await second.controller.start("tui");
-    expect(second.lastStatus()).toBe("✉ pi · +fleet · wake off");
+    expect(second.lastStatus()).toBe("✉ pi · wake off");
   });
 
   test("only one instance is active at a time", async () => {
@@ -592,10 +592,10 @@ describe("refreshing and the doorbell", () => {
     await h.controller.start("tui");
     broken = true;
     await h.advance(30_000);
-    expect(h.lastStatus()).toBe("✉ pi · +fleet · stale");
+    expect(h.lastStatus()).toBe("✉ pi · stale");
     broken = false;
     await h.advance(30_000);
-    expect(h.lastStatus()).toBe("✉ pi · +fleet");
+    expect(h.lastStatus()).toBe("✉ pi");
   });
 
   test("a doorbell that exits is not restarted until /mail restart", async () => {
@@ -603,13 +603,13 @@ describe("refreshing and the doorbell", () => {
     await h.controller.start("tui");
     h.bells[0].onExit(1, null);
     await settle();
-    expect(h.lastStatus()).toBe("✉ pi · +fleet · doorbell stopped");
+    expect(h.lastStatus()).toBe("✉ pi · doorbell stopped");
     expect(await h.controller.command("")).toContain("doorbell: stopped (exit 1; see ~/.local/state/agent-mail/log)");
     await h.advance(120_000);
     expect(h.bells.length).toBe(1);
     expect(await h.controller.command("restart")).toContain("doorbell started");
     expect(h.bells.length).toBe(2);
-    expect(h.lastStatus()).toBe("✉ pi · +fleet");
+    expect(h.lastStatus()).toBe("✉ pi");
     expect(await h.controller.command("restart")).toContain("already running");
   });
 
@@ -656,14 +656,14 @@ describe("failures inside the controller", () => {
     await h.controller.start("tui");
     broken = true;
     await h.advance(30_000);
-    expect(h.lastStatus()).toBe("✉ pi · +fleet · stale");
+    expect(h.lastStatus()).toBe("✉ pi · stale");
     expect(await h.controller.command("")).toContain("the last refresh failed: internal error: Error: boom");
     h.bells[0].onLine(RING());
     await settle();
     await h.controller.onSettled();
     broken = false;
     await h.advance(30_000);
-    expect(h.lastStatus()).toBe("✉ pi · +fleet");
+    expect(h.lastStatus()).toBe("✉ pi");
   });
 
   test("a wake that throws is contained", async () => {

@@ -9,11 +9,12 @@ It never receives mail itself. The agent-mail MCP server stays the one reader of
 A status light in Pi's footer:
 
 ```
-✉ pi · 1 direct · +fleet 2 · +nix-config · 1 broadcast
+✉ pi · 1 direct · +fleet 2 · ++nix-config · 1 broadcast
 ```
 
 - The session's mailbox name, then waiting direct mail, the subscribed channels, and unread broadcasts. Channel names are chosen by whoever creates a channel; agent-mail's name grammar limits them to lower-case letters, digits, dots and single hyphens.
-- A channel shows its count when posts wait, and is dim when none do; `+name ?` marks a subscribed channel that is missing.
+- A channel is drawn as it is typed on the join line: `++name` for a wake subscription, `+name` for a quiet one. It shows its count when posts wait, and is dim when none do; a trailing ` ?` marks a subscribed channel that is missing.
+- The default channel, `+fleet`, which every join subscribes to, is drawn only while posts wait there, or when it is missing. `/mail` always lists it.
 - At most six channels, waiting ones first, then `+N more`.
 - The envelope is dim when nothing waits, accent when only quiet posts or broadcasts wait, and warning when mail that rings waits: direct mail, or posts in a channel subscribed with wake.
 - Suffixes say `wake off`, `doorbell stopped`, `agent-mail paused` (the host-wide pause file), or `stale` (the last refresh failed).
