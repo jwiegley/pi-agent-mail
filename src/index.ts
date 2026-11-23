@@ -201,6 +201,17 @@ export function createAgentMailExtension(options: AgentMailOptions = {}): (pi: E
       controller?.onToolEnd(event.toolCallId, event.toolName);
     });
 
+    pi.registerCommand("mailbox-check", {
+      description: "agent-mail: wake this session for channel posts at most once every TIME (5m, 4h, 1d), or default; direct mail always wakes at once",
+      handler: async (args, ctx) => {
+        let text: string;
+        if (options.disabled) text = "agent-mail: off (PI_AGENT_MAIL=off)";
+        else if (controller) text = await controller.mailboxCheck(args);
+        else text = "agent-mail: not started";
+        if (ctx.hasUI) ctx.ui.notify(text, "info");
+      },
+    });
+
     pi.registerCommand("mail", {
       description: "agent-mail: this session's channels and waiting mail; /mail check | pause | resume | restart",
       getArgumentCompletions: (prefix: string) => {

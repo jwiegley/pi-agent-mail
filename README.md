@@ -30,6 +30,15 @@ A session without a mailbox name shows nothing.
 | `/mail pause`, `/mail resume` | Turn automatic wakes off or on for this Pi process |
 | `/mail restart` | Start the doorbell again after it stopped |
 
+`/mailbox-check TIME` sets this session's own interval for channel posts: with `/mailbox-check 4h`
+a post in a wake channel wakes the agent at most once every four hours, and one that arrives
+sooner is held until the interval ends. TIME is a whole number of minutes, hours or days from `1m`
+to `7d` (`5m`, `4h`, `1d`). Direct mail still wakes the session at once, after the ordinary
+20-second cooldown. `/mail check` wakes for a held post at once. `/mailbox-check default` goes back to waking as soon as a post rings, and
+`/mailbox-check` alone says what is set. Like the pause, the interval belongs to this Pi process:
+it survives `/reload`, `/new` and `/resume`, a restart of Pi starts without it, and no default or
+other session changes.
+
 ## How it wakes the agent
 
 - It runs agent-mail's doorbell, `agent-mail watch --doorbell --forever --parent <Pi's pid>`, which prints one fixed line when mail starts waiting. The line passes a strict check before anything acts on it.

@@ -115,6 +115,7 @@ describe("registration", () => {
     expect(mail.description).toContain("agent-mail");
     expect(mail.getArgumentCompletions("re").map((i: any) => i.value)).toEqual(["resume", "restart"]);
     expect(mail.getArgumentCompletions("zz")).toBeNull();
+    expect(f.commands.get("mailbox-check").description).toContain("at most once every TIME");
     expect(f.sent).toEqual([]);
   });
 });
@@ -158,6 +159,15 @@ describe("a session end to end against a fake agent-mail", () => {
 
     await f.commands.get("mail").handler("", c.ctx);
     expect(c.notices[c.notices.length - 1].split("\n")[0]).toBe("agent-mail: pi@hera (agent-mail 2.3.0)");
+
+    await f.commands.get("mailbox-check").handler(" 4h ", c.ctx);
+    expect(c.notices[c.notices.length - 1]).toContain("at most once every 4 h; direct mail still wakes it at once");
+    await f.commands.get("mailbox-check").handler("sometimes", c.ctx);
+    expect(c.notices[c.notices.length - 1]).toContain("usage: /mailbox-check");
+    await f.commands.get("mailbox-check").handler("", c.ctx);
+    expect(c.notices[c.notices.length - 1]).toContain("at most once every 4 h");
+    await f.commands.get("mail").handler("", c.ctx);
+    expect(c.notices[c.notices.length - 1]).toContain("channel posts at most once every 4 h (/mailbox-check)");
 
     f.emit("session_shutdown", { reason: "quit" }, c.ctx);
     expect(c.statuses[c.statuses.length - 1]).toEqual(["agent-mail", undefined]);

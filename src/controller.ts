@@ -26,6 +26,8 @@ export interface Carry {
   lastWakeAt: number;
   /** The bound name; in legacy mode the only way the next runtime knows it before a ring. */
   name: string | null;
+  /** The session's own channel interval (/mailbox-check), null for the default. */
+  channelEveryMs: number | null;
 }
 
 /** Per-process record: which instance is active, and what the last one handed over. */
@@ -61,6 +63,25 @@ export interface Config {
 type Mode = "off" | "inactive" | "error" | "full" | "legacy";
 
 export const USAGE = "usage: /mail [check | pause | resume | restart]";
+export const EVERY_USAGE = "usage: /mailbox-check [TIME | default], TIME from 1m to 7d, such as 5m, 4h or 1d";
+const MIN_EVERY_MS = 60_000;
+const MAX_EVERY_MS = 7 * 24 * 60 * 60_000;
+const UNIT_MS: Readonly<Record<string, number>> = { m: 60_000, h: 60 * 60_000, d: 24 * 60 * 60_000 };
+
+/** "5m", "4h" or "1d" in milliseconds; null for anything else or outside 1 minute to 7 days. */
+export function parseEvery(text: string): number | null {
+  const match = /^([1-9][0-9]{0,4})([mhd])$/.exec(text);
+  if (!match) return null;
+  const ms = Number(match[1]) * (UNIT_MS[match[2] as string] as number);
+  return ms >= MIN_EVERY_MS && ms <= MAX_EVERY_MS ? ms : null;
+}
+
+/** 5_400_000 as "90 min", 14_400_000 as "4 h", 86_400_000 as "1 d". */
+export function everyText(ms: number): string {
+  if (ms % UNIT_MS.d === 0) return `${ms / (UNIT_MS.d as number)} d`;
+  if (ms % UNIT_MS.h === 0) return `${ms / (UNIT_MS.h as number)} h`;
+  return `${ms / (UNIT_MS.m as number)} min`;
+}
 const LOG_HINT = "see ~/.local/state/agent-mail/log";
 const REFRESHING: ReadonlySet<AgentMailOp> = new Set(["receive", "reread", "subscribe", "unsubscribe", "send"]);
 const MAX_TRACKED_CALLS = 64;
@@ -93,7 +114,16 @@ export class Controller {
   private owed = false;
   private carriedName: string | null = null;
   private lastWakeAt = Number.NEGATIVE_INFINITY;
+  /**
+   * This session's own interval between wakes for channel posts (/mailbox-check); null: the
+   * configured cooldown, as for direct mail. It lives as long as the Pi process and is handed
+   * over a reload like the pause; no default and no other session changes.
+   */
+  private channelEveryMs: number | null = null;
+  /** While later than now: a ring without direct mail is held until then, and nothing need be asked. */
+  private heldUntil = 0;
   private cooldownTimer: unknown = null;
+  private cooldownDue = 0;
   private interval: unknown = null;
   private inflight: Promise<void> | null = null;
   private rerun = false;
@@ -125,6 +155,7 @@ export class Controller {
     if (slot.carry) {
       this.wakeOn = slot.carry.wakeOn;
       this.lastWakeAt = slot.carry.lastWakeAt;
+      this.channelEveryMs = slot.carry.channelEveryMs ?? null;
       this.owed = slot.carry.deferred;
       this.carriedName = slot.carry.name;
       slot.carry = null;
@@ -148,6 +179,7 @@ export class Controller {
         wakeOn: this.wakeOn,
         lastWakeAt: this.lastWakeAt,
         name: this.name ?? this.carriedName,
+        channelEveryMs: this.channelEveryMs,
       };
     }
     this.bellGen++;
@@ -398,23 +430,43 @@ export class Controller {
 
   // ---- waking ----
 
-  private cooldownLeft(): number {
-    return this.lastWakeAt + this.config.cooldownMs - this.deps.now();
+  /**
+   * How long until RING may wake: the configured cooldown since the last wake, or for a ring
+   * with no direct mail the session's own channel interval when it has one. Without a ring,
+   * the shortest wait any ring could have.
+   */
+  private cooldownLeft(ring: Ring | null = null): number {
+    const span = ring !== null && this.holds(ring) ? Math.max(this.channelEveryMs as number, this.config.cooldownMs) : this.config.cooldownMs;
+    return this.lastWakeAt + span - this.deps.now();
+  }
+
+  /** Whether RING is one the session's channel interval applies to: channel posts only. */
+  private holds(ring: Ring): boolean {
+    return ring.direct === 0 && this.channelEveryMs !== null;
   }
 
   private considerWake(ring: Ring): void {
     if (!this.wakeOn) return;
-    const wait = this.cooldownLeft();
+    const wait = this.cooldownLeft(ring);
     if (wait <= 0 && this.deps.isIdle()) {
       this.wake(ring);
       return;
     }
+    // The doorbell rings again, with its totals, for each new message: a later ring with direct
+    // mail ends the hold here.
+    this.heldUntil = this.holds(ring) && wait > 0 ? this.deps.now() + wait : 0;
     this.deferred = true;
     if (wait > 0) this.armCooldown(wait);
   }
 
+  /** One timer for the deferred wake; a wait that ends sooner than the armed one replaces it. */
   private armCooldown(ms: number): void {
-    if (this.cooldownTimer !== null) return;
+    const due = this.deps.now() + ms;
+    if (this.cooldownTimer !== null) {
+      if (this.cooldownDue <= due) return;
+      this.deps.clearTimeout(this.cooldownTimer);
+    }
+    this.cooldownDue = due;
     this.cooldownTimer = this.deps.setTimeout(() => {
       this.cooldownTimer = null;
       if (!this.stopped && this.deferred && this.deps.isIdle()) this.background(this.recheck());
@@ -437,6 +489,7 @@ export class Controller {
       return false;
     }
     this.deferred = false;
+    this.heldUntil = 0;
     this.lastWakeAt = this.deps.now();
     return true;
   }
@@ -445,7 +498,8 @@ export class Controller {
   private async recheck(): Promise<void> {
     if (this.stopped || !this.deferred || !this.wakeOn || this.name === null || this.rechecking) return;
     if (this.mode !== "full" && this.mode !== "legacy") return;
-    const wait = this.cooldownLeft();
+    // A held channel post asks agent-mail nothing until its interval ends.
+    const wait = Math.max(this.cooldownLeft(), this.heldUntil - this.deps.now());
     if (wait > 0) {
       this.armCooldown(wait);
       return;
@@ -456,6 +510,13 @@ export class Controller {
       if (this.stopped || ring === "failed") return;
       if (ring === null) {
         this.deferred = false;
+        return;
+      }
+      // The ring is now known: one without direct mail waits out the session's channel interval.
+      const held = this.holds(ring) ? this.cooldownLeft(ring) : 0;
+      if (held > 0) {
+        this.heldUntil = this.deps.now() + held;
+        this.armCooldown(held);
         return;
       }
       if (this.deferred && this.wakeOn && this.deps.isIdle()) this.wake(ring);
@@ -511,7 +572,9 @@ export class Controller {
 
   private wakeState(): string {
     if (!this.wakeOn) return this.config.wake ? "paused (/mail resume)" : "off (PI_AGENT_MAIL_WAKE=0; /mail resume)";
-    return this.deferred ? "on (one waits for Pi to settle)" : "on";
+    const every = this.channelEveryMs === null ? "" : `; channel posts at most once every ${everyText(this.channelEveryMs)} (/mailbox-check)`;
+    const waits = this.channelEveryMs === null ? "on (one waits for Pi to settle)" : "on (one waits for Pi to settle or for its interval)";
+    return (this.deferred ? waits : "on") + every;
   }
 
   private details(): string {
@@ -531,6 +594,38 @@ export class Controller {
     }
   }
 
+  private everyState(): string {
+    return this.channelEveryMs === null
+      ? "agent-mail: channel posts wake this session as soon as they ring (the default). Direct mail always does."
+      : `agent-mail: channel posts wake this session at most once every ${everyText(this.channelEveryMs)}; direct mail still wakes it at once. /mailbox-check default restores the default.`;
+  }
+
+  /** /mailbox-check [TIME | default]: this session's interval between wakes for channel posts; never rejects. */
+  async mailboxCheck(args: string): Promise<string> {
+    try {
+      if (this.stopped) return "agent-mail: stopped";
+      return await this.every(args.trim().toLowerCase());
+    } catch (error) {
+      this.fail(error);
+      return `agent-mail: /mailbox-check failed: ${cleanText(String(error), 160)}`;
+    }
+  }
+
+  private async every(arg: string): Promise<string> {
+    if (arg === "") return this.everyState();
+    const reset = arg === "default";
+    const ms = reset ? null : parseEvery(arg);
+    if (!reset && ms === null) return EVERY_USAGE;
+    this.channelEveryMs = ms;
+    this.heldUntil = 0;
+    // A wait armed under the old interval no longer holds: ask again what rings.
+    if (this.cooldownTimer !== null) this.deps.clearTimeout(this.cooldownTimer);
+    this.cooldownTimer = null;
+    this.render();
+    if (this.deferred && this.wakeOn && this.name !== null && (this.mode === "full" || this.mode === "legacy")) await this.recheck();
+    return this.everyState();
+  }
+
   private async commandOnce(args: string): Promise<string> {
     if (this.stopped) return "agent-mail: stopped";
     switch (args.trim().toLowerCase()) {
@@ -543,6 +638,7 @@ export class Controller {
       case "pause":
         this.wakeOn = false;
         this.deferred = false;
+        this.heldUntil = 0;
         if (this.cooldownTimer !== null) this.deps.clearTimeout(this.cooldownTimer);
         this.cooldownTimer = null;
         this.render();

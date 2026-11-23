@@ -449,7 +449,7 @@ describe("one Pi process", () => {
     first.controller.stop();
     expect(slot).toEqual({
       owner: null,
-      carry: { deferred: true, wakeOn: true, lastWakeAt: Number.NEGATIVE_INFINITY, name: "pi" },
+      carry: { deferred: true, wakeOn: true, lastWakeAt: Number.NEGATIVE_INFINITY, name: "pi", channelEveryMs: null },
     });
     const second = harness(ringing(), {}, slot);
     await second.controller.start("tui");
@@ -686,5 +686,195 @@ describe("/mail", () => {
     expect(text).toContain("doorbell: running");
     expect(text).toContain("wakes: on");
     expect(await h.controller.command("frobnicate")).toBe("usage: /mail [check | pause | resume | restart]");
+  });
+});
+
+describe("a session's own channel interval (/mailbox-check)", () => {
+  const CHANNEL = (digest: string) => RING("pi", 0, 2, digest);
+  const DIRECT = (digest: string) => RING("pi", 1, 2, digest);
+  const ringing = (line: () => string) => fullScript((args) => (args.includes("context") ? ok(`${line()}\n`) : undefined));
+
+  test("channel posts wake at most once in the interval, and the held one wakes when it ends", async () => {
+    let line = CHANNEL("aaaaaaaaaaaa");
+    const h = harness(ringing(() => line), { refreshMs: 7 * 24 * 60 * 60_000 });
+    await h.controller.start("tui");
+    expect(await h.controller.mailboxCheck("4h")).toContain("at most once every 4 h");
+    h.bells[0].onLine(line);
+    await settle();
+    expect(h.wakes.length).toBe(1);
+    line = CHANNEL("bbbbbbbbbbbb");
+    await h.advance(60 * 60_000);
+    h.bells[0].onLine(line);
+    await settle();
+    await h.advance(2 * 60 * 60_000);
+    expect(h.wakes.length).toBe(1);
+    await h.advance(60 * 60_000);
+    expect(h.wakes.length).toBe(2);
+    expect(h.wakes[1].details.digest).toBe("bbbbbbbbbbbb");
+  });
+
+  test("direct mail still wakes at once, though a channel post is being held", async () => {
+    let line = CHANNEL("aaaaaaaaaaaa");
+    const h = harness(ringing(() => line), { refreshMs: 7 * 24 * 60 * 60_000 });
+    await h.controller.start("tui");
+    await h.controller.mailboxCheck("4h");
+    h.bells[0].onLine(line);
+    await settle();
+    await h.advance(60_000);
+    line = CHANNEL("bbbbbbbbbbbb");
+    h.bells[0].onLine(line);
+    await settle();
+    expect(h.wakes.length).toBe(1);
+    line = DIRECT("cccccccccccc");
+    h.bells[0].onLine(line);
+    await settle();
+    expect(h.wakes.length).toBe(2);
+    expect(h.wakes[1].details.direct).toBe(1);
+  });
+
+  test("direct mail inside the ordinary cooldown waits for that cooldown, not for the interval", async () => {
+    let line = CHANNEL("aaaaaaaaaaaa");
+    const h = harness(ringing(() => line), { refreshMs: 7 * 24 * 60 * 60_000 });
+    await h.controller.start("tui");
+    await h.controller.mailboxCheck("4h");
+    h.bells[0].onLine(line);
+    await settle();
+    await h.advance(5_000);
+    line = CHANNEL("bbbbbbbbbbbb");
+    h.bells[0].onLine(line);
+    await settle();
+    line = DIRECT("cccccccccccc");
+    h.bells[0].onLine(line);
+    await settle();
+    expect(h.wakes.length).toBe(1);
+    await h.advance(15_000);
+    expect(h.wakes.length).toBe(2);
+  });
+
+  test("a settle inside the interval does not wake for a held channel post", async () => {
+    let line = CHANNEL("aaaaaaaaaaaa");
+    const h = harness(ringing(() => line), { refreshMs: 7 * 24 * 60 * 60_000 });
+    await h.controller.start("tui");
+    await h.controller.mailboxCheck("1h");
+    h.bells[0].onLine(line);
+    await settle();
+    await h.advance(60_000);
+    line = CHANNEL("bbbbbbbbbbbb");
+    h.bells[0].onLine(line);
+    await settle();
+    for (let i = 0; i < 3; i++) await h.controller.onSettled();
+    expect(h.wakes.length).toBe(1);
+  });
+
+  test("default restores immediate channel wakes, and wakes for a post that was held", async () => {
+    let line = CHANNEL("aaaaaaaaaaaa");
+    const h = harness(ringing(() => line), { refreshMs: 7 * 24 * 60 * 60_000 });
+    await h.controller.start("tui");
+    await h.controller.mailboxCheck("4h");
+    h.bells[0].onLine(line);
+    await settle();
+    await h.advance(60_000);
+    line = CHANNEL("bbbbbbbbbbbb");
+    h.bells[0].onLine(line);
+    await settle();
+    expect(h.wakes.length).toBe(1);
+    expect(await h.controller.mailboxCheck("default")).toContain("as soon as they ring");
+    await settle();
+    expect(h.wakes.length).toBe(2);
+  });
+
+  test("the interval is this session's: it shows in /mail, is carried over a reload, and a new process starts without it", async () => {
+    const slot: ProcessSlot = { owner: null, carry: null };
+    const h = harness(fullScript(), {}, slot);
+    await h.controller.start("tui");
+    expect(await h.controller.mailboxCheck("")).toContain("as soon as they ring");
+    await h.controller.mailboxCheck("90m");
+    expect(await h.controller.command("")).toContain("channel posts at most once every 90 min");
+    h.controller.stop();
+    const next = harness(fullScript(), {}, slot);
+    await next.controller.start("tui");
+    expect(await next.controller.mailboxCheck("")).toContain("at most once every 90 min");
+    const fresh = harness(fullScript());
+    await fresh.controller.start("tui");
+    expect(await fresh.controller.mailboxCheck("")).toContain("as soon as they ring");
+  });
+
+  test("an interval that is not a time from 1 minute to 7 days is refused and changes nothing", async () => {
+    const h = harness(fullScript());
+    await h.controller.start("tui");
+    await h.controller.mailboxCheck("2h");
+    for (const bad of ["soon", "4", "10s", "0m", "8d", "1h30m", "-5m", "4 h", "off", "05m"]) {
+      expect(await h.controller.mailboxCheck(bad)).toContain("usage: /mailbox-check");
+    }
+    expect(await h.controller.mailboxCheck("")).toContain("at most once every 2 h");
+  });
+  test("a held channel post asks agent-mail nothing until its interval ends", async () => {
+    let line = CHANNEL("aaaaaaaaaaaa");
+    const h = harness(ringing(() => line), { refreshMs: 30_000 });
+    await h.controller.start("tui");
+    await h.controller.mailboxCheck("30m");
+    h.bells[0].onLine(line);
+    await settle();
+    await h.advance(60_000);
+    line = CHANNEL("bbbbbbbbbbbb");
+    h.bells[0].onLine(line);
+    await settle();
+    const asked = () => h.runs.filter((args) => args.includes("context")).length;
+    const before = asked();
+    await h.advance(20 * 60_000);
+    for (let i = 0; i < 3; i++) await h.controller.onSettled();
+    expect(asked()).toBe(before);
+    expect(h.wakes.length).toBe(1);
+    await h.advance(10 * 60_000);
+    expect(h.wakes.length).toBe(2);
+  });
+
+  test("a hold that ends while Pi is busy wakes at the next settle", async () => {
+    let line = CHANNEL("aaaaaaaaaaaa");
+    const h = harness(ringing(() => line), { refreshMs: 7 * 24 * 60 * 60_000 });
+    await h.controller.start("tui");
+    await h.controller.mailboxCheck("10m");
+    h.bells[0].onLine(line);
+    await settle();
+    await h.advance(60_000);
+    line = CHANNEL("bbbbbbbbbbbb");
+    h.bells[0].onLine(line);
+    await settle();
+    h.setIdle(false);
+    await h.advance(10 * 60_000);
+    expect(h.wakes.length).toBe(1);
+    h.setIdle(true);
+    await h.controller.onSettled();
+    expect(h.wakes.length).toBe(2);
+  });
+
+  test("pause and resume keep a held post held; /mail check wakes for it at once", async () => {
+    let line = CHANNEL("aaaaaaaaaaaa");
+    const h = harness(ringing(() => line), { refreshMs: 7 * 24 * 60 * 60_000 });
+    await h.controller.start("tui");
+    await h.controller.mailboxCheck("1h");
+    h.bells[0].onLine(line);
+    await settle();
+    await h.advance(60_000);
+    line = CHANNEL("bbbbbbbbbbbb");
+    h.bells[0].onLine(line);
+    await settle();
+    await h.controller.command("pause");
+    await h.controller.command("resume");
+    await settle();
+    expect(h.wakes.length).toBe(1);
+    expect(await h.controller.command("check")).toContain("woke the agent");
+    expect(h.wakes.length).toBe(2);
+  });
+
+  test("with no interval set /mail reads as before, and /mail has no every subcommand", async () => {
+    const h = harness(ringing(() => RING()));
+    await h.controller.start("tui");
+    h.setIdle(false);
+    h.bells[0].onLine(RING());
+    await settle();
+    expect(await h.controller.command("")).toContain("wakes: on (one waits for Pi to settle)\n".trimEnd());
+    expect(await h.controller.command("")).not.toContain("interval");
+    expect(await h.controller.command("every 5m")).toBe("usage: /mail [check | pause | resume | restart]");
   });
 });
