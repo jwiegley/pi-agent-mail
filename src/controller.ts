@@ -63,6 +63,42 @@ export interface Config {
 type Mode = "off" | "inactive" | "error" | "full" | "legacy";
 
 export const USAGE = "usage: /mail [check | pause | resume | restart]";
+export const MAILBOX_USAGE = "usage: /mailbox [NAME] [+topic | ++topic | !+topic | !++topic ...]";
+const SPEC_RE = /^(!?)(\+\+?)([a-z0-9](?:[a-z0-9.]|-(?!-))*)$/;
+/** agent-mail's exit status when another process holds the name's reader lock. */
+const NOT_READER = 4;
+const LOCK_RETRIES = 8;
+const LOCK_RETRY_MS = 500;
+
+export interface TopicSpec {
+  channel: string;
+  wake: boolean;
+  write: boolean;
+}
+
+/**
+ * A join line's words after the command: an optional name, then the topic specs. `+a` is a quiet
+ * subscription, `++a` one that wakes, and a leading `!` makes the channel a write target. Null
+ * when a word is none of these; the same topic twice keeps its last spec.
+ */
+export function parseJoinLine(text: string): { name: string | null; specs: TopicSpec[] } | null {
+  const words = text.trim().split(/\s+/).filter((word) => word !== "");
+  let name: string | null = null;
+  if (words.length > 0 && !/^!?\+/.test(words[0] as string)) {
+    name = (words.shift() as string).toLowerCase();
+    if (!/^[a-z0-9](?:[a-z0-9.]|-(?!-))*$/.test(name) || name.length > 64 || name.endsWith("-")) return null;
+  }
+  const specs = new Map<string, TopicSpec>();
+  for (const word of words) {
+    const match = SPEC_RE.exec(word);
+    if (!match || (match[3] as string).length > 64 || (match[3] as string).endsWith("-")) return null;
+    const channel = match[3] as string;
+    specs.delete(channel);
+    specs.set(channel, { channel, wake: match[2] === "++", write: match[1] === "!" });
+  }
+  return { name, specs: [...specs.values()] };
+}
+
 export const EVERY_USAGE = "usage: /mailbox-check [TIME | default], TIME from 1m to 7d, such as 5m, 4h or 1d";
 const MIN_EVERY_MS = 60_000;
 const MAX_EVERY_MS = 7 * 24 * 60 * 60_000;
@@ -591,6 +627,74 @@ export class Controller {
     } catch (error) {
       this.fail(error);
       return `agent-mail: /mail failed: ${cleanText(String(error), 160)}`;
+    }
+  }
+
+  /** Run one agent-mail command that needs the name's reader lock, waiting out a holder a few times. */
+  private async locked(args: readonly string[]): Promise<RunResult> {
+    for (let attempt = 0; ; attempt++) {
+      const result = await this.deps.run(args);
+      if (this.stopped || result.code !== NOT_READER || attempt >= LOCK_RETRIES) return result;
+      await new Promise<void>((resolve) => this.deps.setTimeout(resolve, LOCK_RETRY_MS));
+    }
+  }
+
+  /**
+   * /mailbox [NAME] [specs]: this session's join line, wired here instead of by the agent. The
+   * line is the whole configuration, as in the mailbox skill it replaces in Pi: every runtime
+   * subscription it does not name is dropped, except the default channel and pinned ones; the
+   * default channel is subscribed quietly; then each spec is subscribed with both flags given.
+   * NAME, when given, must be the bound name: nothing is changed otherwise. A refusal stops the
+   * wiring at that step and says which. Never rejects.
+   */
+  async mailbox(args: string): Promise<string> {
+    try {
+      if (this.stopped) return "agent-mail: stopped";
+      const line = parseJoinLine(args);
+      if (line === null) return `agent-mail: that join line has a word that is not a name or a topic; nothing was changed\n${MAILBOX_USAGE}`;
+      if (this.mode === "inactive" && this.allowed) await this.probe();
+      else await this.refresh();
+      if (this.stopped) return "agent-mail: stopped";
+      if (this.mode !== "full" || this.name === null || this.status === null) {
+        return `agent-mail: /mailbox needs agent-mail 2.3 or later and a session name; nothing was changed\n${this.details()}`;
+      }
+      const name = this.name;
+      if (line.name !== null && line.name !== name) {
+        return `agent-mail: this session's mailbox name is ${name}, not ${cleanText(line.name, 64)}: the name comes from its agent-deck title. Nothing was changed.`;
+      }
+      if (line.specs.length === 0) return `${this.details()}\n${MAILBOX_USAGE}`;
+      const status = this.status;
+      const keep = new Set([status.defaultChannel, ...line.specs.map((spec) => spec.channel)]);
+      const done: string[] = [];
+      const failed = (what: string, result: RunResult): string => {
+        const why = result.code === NOT_READER ? "another process holds this name's reader lock; try again in a moment" : describeFailure(result, null);
+        return [`agent-mail: ${what} failed (${why}); the wiring stopped there.`, ...(done.length > 0 ? [`done before it: ${done.join(", ")}`] : []), this.details()].join("\n");
+      };
+      for (const channel of status.channels) {
+        if (keep.has(channel.name) || channel.pinned) continue;
+        const result = await this.locked(["unsubscribe", name, channel.name]);
+        if (this.stopped) return "agent-mail: stopped";
+        if (result.code !== 0) return failed(`unsubscribe +${channel.name}`, result);
+        done.push(`dropped +${channel.name}`);
+      }
+      const wire = async (spec: TopicSpec): Promise<RunResult> =>
+        this.locked(["subscribe", name, spec.channel, spec.wake ? "--wake" : "--no-wake", spec.write ? "--write" : "--no-write"]);
+      const named = new Set(line.specs.map((spec) => spec.channel));
+      const all = named.has(status.defaultChannel) ? line.specs : [{ channel: status.defaultChannel, wake: false, write: false }, ...line.specs];
+      for (const spec of all) {
+        const result = await wire(spec);
+        if (this.stopped) return "agent-mail: stopped";
+        if (result.code !== 0) return failed(`subscribe +${spec.channel}`, result);
+        done.push(`${spec.write ? "!" : ""}${spec.wake ? "++" : "+"}${spec.channel}`);
+      }
+      await this.refresh();
+      if (this.stopped) return "agent-mail: stopped";
+      // Mail that already waits: wake the agent for it now, as /mail check does.
+      const woke = await this.check();
+      return [`agent-mail: ${name} joined: ${done.join(", ")}`, woke].join("\n");
+    } catch (error) {
+      this.fail(error);
+      return `agent-mail: /mailbox failed: ${cleanText(String(error), 160)}`;
     }
   }
 

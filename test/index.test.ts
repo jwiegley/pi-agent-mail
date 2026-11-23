@@ -116,6 +116,7 @@ describe("registration", () => {
     expect(mail.getArgumentCompletions("re").map((i: any) => i.value)).toEqual(["resume", "restart"]);
     expect(mail.getArgumentCompletions("zz")).toBeNull();
     expect(f.commands.get("mailbox-check").description).toContain("at most once every TIME");
+    expect(f.commands.get("mailbox").description).toContain("/mailbox [NAME] [+topic");
     expect(f.sent).toEqual([]);
   });
 });

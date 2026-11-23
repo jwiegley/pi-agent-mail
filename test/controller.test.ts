@@ -1,6 +1,6 @@
 import { describe, expect, test } from "bun:test";
 
-import { type Config, Controller, type Deps, type ProcessSlot, type WakeDetails } from "../src/controller.ts";
+import { type Config, Controller, type Deps, parseJoinLine, type ProcessSlot, type WakeDetails } from "../src/controller.ts";
 import type { RunResult } from "../src/process.ts";
 
 const RING = (name = "pi", direct = 1, channel = 2, digest = "0123456789ab") =>
@@ -876,5 +876,123 @@ describe("a session's own channel interval (/mailbox-check)", () => {
     expect(await h.controller.command("")).toContain("wakes: on (one waits for Pi to settle)\n".trimEnd());
     expect(await h.controller.command("")).not.toContain("interval");
     expect(await h.controller.command("every 5m")).toBe("usage: /mail [check | pause | resume | restart]");
+  });
+});
+
+describe("/mailbox: the join line, wired by the extension", () => {
+  const CHANNELS = [
+    { name: "fleet", unread: 0, wake: true, write: false, pinned: false, missing: false },
+    { name: "old", unread: 0, wake: true, write: true, pinned: false, missing: false },
+    { name: "kept", unread: 0, wake: false, write: false, pinned: true, missing: false },
+  ];
+  /** A session subscribed to fleet, old and the pinned kept; `answer` decides each subscribe and unsubscribe. */
+  const joining = (answer: (args: string[]) => RunResult | undefined = () => undefined, context = "") =>
+    fullScript((args) => {
+      if (args[0] === "subscribe" || args[0] === "unsubscribe") return answer(args) ?? ok("done\n");
+      if (args.includes("json")) return json(status({ channels: CHANNELS }));
+      if (args.includes("context")) return ok(context);
+      return undefined;
+    });
+  const wiring = (h: { runs: string[][] }) => h.runs.filter((args) => args[0] === "subscribe" || args[0] === "unsubscribe").map((args) => args.join(" "));
+  const refused = (code: number): RunResult => ({ ...ok("", code) });
+
+  test("a join line is an optional name and topic specs; the same topic twice keeps its last spec", () => {
+    expect(parseJoinLine("")).toEqual({ name: null, specs: [] });
+    expect(parseJoinLine("  Pi  ")).toEqual({ name: "pi", specs: [] });
+    expect(parseJoinLine("pi +a ++b !+c !++d.e-f")).toEqual({
+      name: "pi",
+      specs: [
+        { channel: "a", wake: false, write: false },
+        { channel: "b", wake: true, write: false },
+        { channel: "c", wake: false, write: true },
+        { channel: "d.e-f", wake: true, write: true },
+      ],
+    });
+    expect(parseJoinLine("+a ++a")).toEqual({ name: null, specs: [{ channel: "a", wake: true, write: false }] });
+    for (const bad of ["pi -a", "pi a", "+A", "+a--b", "+a-", "+", "+++a", "!a", "pi +a extra"]) expect(parseJoinLine(bad)).toBeNull();
+  });
+
+  test("the line is the whole configuration: unnamed subscriptions are dropped, the default channel is quiet, each spec gets both flags", async () => {
+    const h = harness(joining());
+    await h.controller.start("tui");
+    const text = await h.controller.mailbox("pi ++nix-config !+vulcan");
+    expect(wiring(h)).toEqual([
+      "unsubscribe pi old",
+      "subscribe pi fleet --no-wake --no-write",
+      "subscribe pi nix-config --wake --no-write",
+      "subscribe pi vulcan --no-wake --write",
+    ]);
+    expect(text.split("\n")[0]).toBe("agent-mail: pi joined: dropped +old, +fleet, ++nix-config, !+vulcan");
+    expect(text).toContain("nothing rings now");
+  });
+
+  test("a spec for the default channel replaces its quiet subscription, and the name may be left out", async () => {
+    const h = harness(joining());
+    await h.controller.start("tui");
+    await h.controller.mailbox("++fleet +old");
+    expect(wiring(h)).toEqual(["subscribe pi fleet --wake --no-write", "subscribe pi old --no-wake --no-write"]);
+  });
+
+  test("another name than the bound one changes nothing", async () => {
+    const h = harness(joining());
+    await h.controller.start("tui");
+    const text = await h.controller.mailbox("nix ++nix-config");
+    expect(text).toContain("this session's mailbox name is pi, not nix");
+    expect(wiring(h)).toEqual([]);
+  });
+
+  test("a word that is not a topic spec changes nothing", async () => {
+    const h = harness(joining());
+    await h.controller.start("tui");
+    for (const line of ["pi -old", "pi ++nix-config fleet"]) expect(await h.controller.mailbox(line)).toContain("usage: /mailbox");
+    expect(wiring(h)).toEqual([]);
+  });
+
+  test("with no spec it only shows the session's mail and the usage", async () => {
+    const h = harness(joining());
+    await h.controller.start("tui");
+    const text = await h.controller.mailbox("pi");
+    expect(text).toContain("agent-mail: pi@hera");
+    expect(text).toContain("usage: /mailbox");
+    expect(wiring(h)).toEqual([]);
+  });
+
+  test("a held reader lock is waited out, and the wiring goes on", async () => {
+    let held = 2;
+    const h = harness(joining((args) => (args[0] === "subscribe" && args[2] === "fleet" && held-- > 0 ? refused(4) : undefined)));
+    await h.controller.start("tui");
+    const pending = h.controller.mailbox("pi +a");
+    for (let i = 0; i < 6; i++) await h.advance(500);
+    const text = await pending;
+    expect(text.split("\n")[0]).toBe("agent-mail: pi joined: dropped +old, +fleet, +a");
+    expect(wiring(h).filter((line) => line.startsWith("subscribe pi fleet")).length).toBe(3);
+  });
+
+  test("a lock that stays held stops the wiring and says what was done before it", async () => {
+    const h = harness(joining((args) => (args[0] === "subscribe" ? refused(4) : undefined)));
+    await h.controller.start("tui");
+    const pending = h.controller.mailbox("pi +a");
+    for (let i = 0; i < 12; i++) await h.advance(500);
+    const text = await pending;
+    expect(text).toContain("subscribe +fleet failed (another process holds this name's reader lock; try again in a moment); the wiring stopped there.");
+    expect(text).toContain("done before it: dropped +old");
+    expect(wiring(h).some((line) => line.startsWith("subscribe pi a"))).toBe(false);
+  });
+
+  test("a refusal stops at that spec: later specs are not wired", async () => {
+    const h = harness(joining((args) => (args[0] === "subscribe" && args[2] === "nope" ? refused(1) : undefined)));
+    await h.controller.start("tui");
+    const text = await h.controller.mailbox("pi +a +nope +b");
+    expect(text).toContain("subscribe +nope failed");
+    expect(text).toContain("done before it: dropped +old, +fleet, +a");
+    expect(wiring(h).some((line) => line.startsWith("subscribe pi b"))).toBe(false);
+  });
+
+  test("mail that already waits wakes the agent once the topics are wired", async () => {
+    const h = harness(joining(undefined, `${RING()}\n`));
+    await h.controller.start("tui");
+    const text = await h.controller.mailbox("pi +a");
+    expect(h.wakes.length).toBe(1);
+    expect(text).toContain("woke the agent");
   });
 });

@@ -30,6 +30,17 @@ A session without a mailbox name shows nothing.
 | `/mail pause`, `/mail resume` | Turn automatic wakes off or on for this Pi process |
 | `/mail restart` | Start the doorbell again after it stopped |
 
+`/mailbox [NAME] [+topic | ++topic | !+topic | !++topic ...]` joins the session's mailbox and
+wires its topics without a turn of the agent: `+a` is a quiet subscription, `++a` one that wakes,
+and a leading `!` makes the channel a write target. The line is the whole configuration: every
+subscription it does not name is dropped, except the default channel, which stays subscribed
+quietly, and pinned channels. NAME, when given, must be the session's bound name (its agent-deck
+title); nothing is changed otherwise, or when a word is not a topic spec. A refusal stops the
+wiring at that step and says what was done before it. Subscribing needs the name's reader lock,
+which the session's own agent-mail server takes while the agent uses a mail tool, so the command
+waits a few seconds for it. Mail that already waits wakes the agent when the wiring is done.
+`/mailbox` alone shows what `/mail` shows. It needs agent-mail 2.3.0 or later.
+
 `/mailbox-check TIME` sets this session's own interval for channel posts: with `/mailbox-check 4h`
 a post in a wake channel wakes the agent at most once every four hours, and one that arrives
 sooner is held until the interval ends. TIME is a whole number of minutes, hours or days from `1m`
