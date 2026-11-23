@@ -51,6 +51,14 @@ export function receiveHint(toolNames: readonly string[]): string | null {
   return null;
 }
 
+/** How to reach agent-mail's tools in general in this Pi, or null when none can be seen. */
+export function toolsHint(toolNames: readonly string[]): string | null {
+  const names = new Set(toolNames);
+  if (names.has(NAMESPACE_TOOL)) return `the ${NAMESPACE_TOOL} tool, naming each tool below`;
+  if (names.has(PROXY_TOOL)) return 'the mcp tool with server "agent-mail", naming each tool below';
+  return [...names].some((name) => DIRECT_RECEIVE.includes(name as never)) ? "the agent-mail tools" : null;
+}
+
 const CUTTERS: ReadonlySet<string> = new Set(["head", "tail", "sed", "grep"]);
 // Commands that run the command after them; their options are skipped, with
 // the value of an option that takes one, and timeout's duration.

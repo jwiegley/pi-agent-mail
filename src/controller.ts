@@ -10,7 +10,7 @@
 import { cleanText, parseRingLine, parseStatus, type MailStatus, type Ring, type StatusResult } from "./contract.ts";
 import type { DoorbellHandle, RunResult } from "./process.ts";
 import { type Flags, renderDetails, renderStatus, type Theme, type View, wakeText } from "./render.ts";
-import { type AgentMailOp, classifyCall, receiveHint } from "./tools.ts";
+import { type AgentMailOp, classifyCall, receiveHint, toolsHint } from "./tools.ts";
 
 export interface WakeDetails {
   name: string;
@@ -67,7 +67,7 @@ export const MAILBOX_USAGE = "usage: /mailbox [NAME] [+topic | ++topic | !+topic
 const SPEC_RE = /^(!?)(\+\+?)([a-z0-9](?:[a-z0-9.]|-(?!-))*)$/;
 /** agent-mail's exit status when another process holds the name's reader lock. */
 const NOT_READER = 4;
-const LOCK_RETRIES = 8;
+const LOCK_RETRIES = 4;
 const LOCK_RETRY_MS = 500;
 
 export interface TopicSpec {
@@ -666,26 +666,31 @@ export class Controller {
       const status = this.status;
       const keep = new Set([status.defaultChannel, ...line.specs.map((spec) => spec.channel)]);
       const done: string[] = [];
-      const failed = (what: string, result: RunResult): string => {
-        const why = result.code === NOT_READER ? "another process holds this name's reader lock; try again in a moment" : describeFailure(result, null);
-        return [`agent-mail: ${what} failed (${why}); the wiring stopped there.`, ...(done.length > 0 ? [`done before it: ${done.join(", ")}`] : []), this.details()].join("\n");
-      };
-      for (const channel of status.channels) {
-        if (keep.has(channel.name) || channel.pinned) continue;
-        const result = await this.locked(["unsubscribe", name, channel.name]);
-        if (this.stopped) return "agent-mail: stopped";
-        if (result.code !== 0) return failed(`unsubscribe +${channel.name}`, result);
-        done.push(`dropped +${channel.name}`);
-      }
-      const wire = async (spec: TopicSpec): Promise<RunResult> =>
-        this.locked(["subscribe", name, spec.channel, spec.wake ? "--wake" : "--no-wake", spec.write ? "--write" : "--no-write"]);
+      const before = (): string[] => (done.length > 0 ? [`done before it: ${done.join(", ")}`] : []);
+      const failed = (what: string, result: RunResult): string =>
+        [`agent-mail: ${what} failed (${describeFailure(result, null)}); the wiring stopped there.`, ...before(), this.details()].join("\n");
       const named = new Set(line.specs.map((spec) => spec.channel));
       const all = named.has(status.defaultChannel) ? line.specs : [{ channel: status.defaultChannel, wake: false, write: false }, ...line.specs];
-      for (const spec of all) {
-        const result = await wire(spec);
+      type Step = { label: string; args: string[]; call: string };
+      const steps: Step[] = [
+        ...status.channels
+          .filter((channel) => !keep.has(channel.name) && !channel.pinned)
+          .map((channel) => ({ label: `dropped +${channel.name}`, args: ["unsubscribe", name, channel.name], call: `unsubscribe {"channel": "${channel.name}"}` })),
+        ...all.map((spec) => ({
+          label: `${spec.write ? "!" : ""}${spec.wake ? "++" : "+"}${spec.channel}`,
+          args: ["subscribe", name, spec.channel, spec.wake ? "--wake" : "--no-wake", spec.write ? "--write" : "--no-write"],
+          call: `subscribe {"channel": "${spec.channel}", "wake": ${spec.wake}, "write": ${spec.write}}`,
+        })),
+      ];
+      for (const [index, step] of steps.entries()) {
+        const result = await this.locked(step.args);
         if (this.stopped) return "agent-mail: stopped";
-        if (result.code !== 0) return failed(`subscribe +${spec.channel}`, result);
-        done.push(`${spec.write ? "!" : ""}${spec.wake ? "++" : "+"}${spec.channel}`);
+        // The session's own agent-mail server keeps the name's reader lock for as long as it
+        // lives, which in Pi is some minutes after the agent's last mail tool call. Then only
+        // that server can change the subscriptions: the rest goes to the agent, as tool calls.
+        if (result.code === NOT_READER) return this.handOver(name, steps.slice(index).map((left) => left.call), before());
+        if (result.code !== 0) return failed(step.args[0] === "unsubscribe" ? `unsubscribe +${step.args[2]}` : `subscribe +${step.args[2]}`, result);
+        done.push(step.label);
       }
       await this.refresh();
       if (this.stopped) return "agent-mail: stopped";
@@ -696,6 +701,29 @@ export class Controller {
       this.fail(error);
       return `agent-mail: /mailbox failed: ${cleanText(String(error), 160)}`;
     }
+  }
+
+  /** Ask the agent to finish a join line through its own agent-mail server, which holds the lock. */
+  private handOver(name: string, calls: readonly string[], before: readonly string[]): string {
+    const hint = toolsHint(this.deps.toolNames());
+    if (hint === null) {
+      return ["agent-mail: this session's own agent-mail server holds the mailbox lock, and no agent-mail tool is in reach to ask it; try /mailbox again in a few minutes.", ...before, this.details()].join("\n");
+    }
+    if (!this.deps.isIdle()) {
+      return ["agent-mail: this session's own agent-mail server holds the mailbox lock and Pi is busy; run /mailbox again when the agent has settled.", ...before].join("\n");
+    }
+    const text =
+      `agent-mail: John ran /mailbox for ${name}. This session's own agent-mail server holds the mailbox lock, so finish the wiring through it. ` +
+      `With ${hint}, make exactly these calls in this order and nothing else, then say in one line what each answered: ` +
+      calls.map((call, index) => `${index + 1}. ${call}`).join("; ") +
+      ". If one is refused, stop there and say what it said.";
+    try {
+      this.deps.sendWake(text, { name, direct: 0, channel: 0, digest: "" });
+    } catch (error) {
+      this.fail(error);
+      return ["agent-mail: this session's own agent-mail server holds the mailbox lock, and the agent could not be asked to finish; try /mailbox again in a few minutes.", ...before].join("\n");
+    }
+    return [`agent-mail: this session's own agent-mail server holds the mailbox lock, so the agent was asked to finish the wiring (${calls.length} ${calls.length === 1 ? "call" : "calls"}).`, ...before].join("\n");
   }
 
   private everyState(): string {

@@ -968,15 +968,37 @@ describe("/mailbox: the join line, wired by the extension", () => {
     expect(wiring(h).filter((line) => line.startsWith("subscribe pi fleet")).length).toBe(3);
   });
 
-  test("a lock that stays held stops the wiring and says what was done before it", async () => {
+  test("a lock that stays held is the session's own server: the agent is asked to finish, with the exact calls left", async () => {
     const h = harness(joining((args) => (args[0] === "subscribe" ? refused(4) : undefined)));
     await h.controller.start("tui");
-    const pending = h.controller.mailbox("pi +a");
-    for (let i = 0; i < 12; i++) await h.advance(500);
+    const pending = h.controller.mailbox("pi ++nix-config !+vulcan");
+    for (let i = 0; i < 8; i++) await h.advance(500);
     const text = await pending;
-    expect(text).toContain("subscribe +fleet failed (another process holds this name's reader lock; try again in a moment); the wiring stopped there.");
+    expect(text).toContain("the agent was asked to finish the wiring (3 calls)");
     expect(text).toContain("done before it: dropped +old");
-    expect(wiring(h).some((line) => line.startsWith("subscribe pi a"))).toBe(false);
+    expect(h.wakes.length).toBe(1);
+    const asked = h.wakes[0].text;
+    expect(asked).toContain("John ran /mailbox for pi");
+    expect(asked).toContain('the mcp tool with server "agent-mail"');
+    expect(asked).toContain(
+      '1. subscribe {"channel": "fleet", "wake": false, "write": false}; 2. subscribe {"channel": "nix-config", "wake": true, "write": false}; 3. subscribe {"channel": "vulcan", "wake": false, "write": true}.',
+    );
+    expect(wiring(h).some((line) => line.startsWith("subscribe pi nix-config"))).toBe(false);
+  });
+
+  test("with the lock held and Pi busy, or no mail tool in reach, nothing is asked and the command says why", async () => {
+    const h = harness(joining((args) => (args[0] === "unsubscribe" ? refused(4) : undefined)));
+    await h.controller.start("tui");
+    h.setIdle(false);
+    let pending = h.controller.mailbox("pi +a");
+    for (let i = 0; i < 8; i++) await h.advance(500);
+    expect(await pending).toContain("Pi is busy; run /mailbox again when the agent has settled");
+    h.setIdle(true);
+    h.setTools(["read", "bash"]);
+    pending = h.controller.mailbox("pi +a");
+    for (let i = 0; i < 8; i++) await h.advance(500);
+    expect(await pending).toContain("no agent-mail tool is in reach");
+    expect(h.wakes.length).toBe(0);
   });
 
   test("a refusal stops at that spec: later specs are not wired", async () => {

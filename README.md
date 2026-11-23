@@ -36,9 +36,11 @@ and a leading `!` makes the channel a write target. The line is the whole config
 subscription it does not name is dropped, except the default channel, which stays subscribed
 quietly, and pinned channels. NAME, when given, must be the session's bound name (its agent-deck
 title); nothing is changed otherwise, or when a word is not a topic spec. A refusal stops the
-wiring at that step and says what was done before it. Subscribing needs the name's reader lock,
-which the session's own agent-mail server takes while the agent uses a mail tool, so the command
-waits a few seconds for it. Mail that already waits wakes the agent when the wiring is done.
+wiring at that step and says what was done before it. Subscribing needs the name's reader lock.
+The session's own agent-mail server holds that lock for as long as it lives, which in Pi is some
+minutes after the agent's last mail tool call; the command waits two seconds for it, and when it
+is still held it asks the agent, with one fixed notice, to make the remaining `subscribe` and
+`unsubscribe` calls through that server. Mail that already waits wakes the agent when the wiring is done.
 `/mailbox` alone shows what `/mail` shows. It needs agent-mail 2.3.0 or later.
 
 `/mailbox-check TIME` sets this session's own interval for channel posts: with `/mailbox-check 4h`
