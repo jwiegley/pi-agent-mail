@@ -52,7 +52,7 @@ function harness(script: Script, config: Partial<Config> = {}, slot: ProcessSlot
   let nextId = 1;
   const timers = new Map<number, { at: number; fn: () => void; every?: number }>();
   const runs: string[][] = [];
-  const wakes: Array<{ text: string; details: WakeDetails }> = [];
+  const wakes: Array<{ text: string; display: boolean; details: WakeDetails }> = [];
   const statuses: Array<string | undefined> = [];
   const bells: Bell[] = [];
   let tools: string[] = ["mcp"];
@@ -104,9 +104,9 @@ function harness(script: Script, config: Partial<Config> = {}, slot: ProcessSlot
     isIdle: () => idle,
     hasNameSource: () => nameSource,
     toolNames: () => tools,
-    sendWake: (text, details) => {
+    sendWake: (text, message) => {
       count(0);
-      wakes.push({ text, details });
+      wakes.push({ text, ...message });
     },
     setStatus: (text) => {
       count(0);
@@ -977,6 +977,7 @@ describe("/mailbox: the join line, wired by the extension", () => {
     expect(text).toContain("the agent was asked to finish the wiring (3 calls)");
     expect(text).toContain("done before it: dropped +old");
     expect(h.wakes.length).toBe(1);
+    expect(h.wakes[0].display).toBe(true);
     const asked = h.wakes[0].text;
     expect(asked).toContain("John ran /mailbox for pi");
     expect(asked).toContain('the mcp tool with server "agent-mail"');

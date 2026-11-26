@@ -49,7 +49,7 @@ export interface Deps {
   /** Whether agent-mail's environment holds any source of a session name. */
   hasNameSource(): boolean;
   toolNames(): readonly string[];
-  sendWake(text: string, details: WakeDetails): void;
+  sendWake(text: string, message: { display: boolean; details: WakeDetails }): void;
   setStatus(text: string | undefined): void;
   theme(): Theme;
 }
@@ -514,10 +514,8 @@ export class Controller {
     try {
       const hint = receiveHint(this.deps.toolNames());
       this.deps.sendWake(wakeText(ring.name, ring.direct, ring.channel, hint), {
-        name: ring.name,
-        direct: ring.direct,
-        channel: ring.channel,
-        digest: ring.digest,
+        display: false,
+        details: { name: ring.name, direct: ring.direct, channel: ring.channel, digest: ring.digest },
       });
     } catch (error) {
       this.deferred = true;
@@ -718,7 +716,7 @@ export class Controller {
       calls.map((call, index) => `${index + 1}. ${call}`).join("; ") +
       ". If one is refused, stop there and say what it said.";
     try {
-      this.deps.sendWake(text, { name, direct: 0, channel: 0, digest: "" });
+      this.deps.sendWake(text, { display: true, details: { name, direct: 0, channel: 0, digest: "" } });
     } catch (error) {
       this.fail(error);
       return ["agent-mail: this session's own agent-mail server holds the mailbox lock, and the agent could not be asked to finish; try /mailbox again in a few minutes.", ...before].join("\n");

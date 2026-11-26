@@ -305,7 +305,8 @@ def full_run(program, adapter):
         ok(not any(e.get("type") == "agent_start" for e in pi.events), "a quiet post started a turn")
 
         mailbox.send(NAME, "hello", "direct mail for the end-to-end run")
-        pi.wait(custom_wake, "the wake notice")
+        wake = pi.wait(custom_wake, "the pending-mail wake")
+        ok(wake["message"].get("display") is False, "Pi would display the pending-mail wake")
         if adapter:
             end = pi.wait(tool_end("mcp"), "the receive through the adapter")
             ok(end.get("isError") is False, f"receive failed: {result_text(end)}")

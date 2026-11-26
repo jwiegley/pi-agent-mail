@@ -143,9 +143,9 @@ export function createAgentMailExtension(options: AgentMailOptions = {}): (pi: E
             return [];
           }
         },
-        sendWake: (text, details) =>
+        sendWake: (text, { display, details }) =>
           pi.sendMessage(
-            { customType: MESSAGE_TYPE, content: text, display: true, details },
+            { customType: MESSAGE_TYPE, content: text, display, details },
             { triggerTurn: true, deliverAs: "followUp" },
           ),
         setStatus: (text) => {
